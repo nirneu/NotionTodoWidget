@@ -9,7 +9,7 @@ class NotionService: ObservableObject {
     @Published var todos: [TodoItem] = []
     @Published var isLoading = false
     @Published var errorMessage: String?
-    @Published var databaseSchema: DatabaseSchema?
+    @Published var databaseProperties: [String: Any] = [:]
     
     private var apiKey: String? {
         get {
@@ -102,8 +102,28 @@ class NotionService: ObservableObject {
                 }
                 
                 do {
-                    self.databaseSchema = try self.parseDatabaseSchema(data)
-                    print("Database schema loaded: \(self.databaseSchema?.properties.keys.joined(separator: ", ") ?? "none")")
+                    let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+                    if let properties = json?["properties"] as? [String: Any] {
+                        self.databaseProperties = properties
+                        print("Database properties found: \(properties.keys.joined(separator: ", "))")
+                        
+                        // Log the actual property structures for debugging
+                        for (key, value) in properties {
+                            if let propertyDict = value as? [String: Any],
+                               let type = propertyDict["type"] as? String {
+                                print("Property '\(key)' is of type '\(type)'")
+                                
+                                // If it's a select property, log the options
+                                if type == "select",
+                                   let selectDict = propertyDict["select"] as? [String: Any],
+                                   let options = selectDict["options"] as? [[String: Any]] {
+                                    let optionNames = options.compactMap { $0["name"] as? String }
+                                    print("  Select options: \(optionNames.joined(separator: ", "))")
+                                }
+                            }
+                        }
+                    }
+                    
                     // After getting schema, fetch the actual todos
                     self.fetchTodos()
                 } catch {
@@ -352,49 +372,6 @@ class NotionService: ObservableObject {
         
         let formatter = ISO8601DateFormatter()
         return formatter.date(from: dateString)
-    }
-    
-    private func parseDatabaseSchema(_ data: Data) throws -> DatabaseSchema {
-        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        guard let id = json?["id"] as? String,
-              let propertiesDict = json?["properties"] as? [String: Any] else {
-            throw NSError(domain: "NotionService", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid database schema format"])
-        }
-        
-        let title = (json?["title"] as? [[String: Any]])?.first?["plain_text"] as? String ?? "Untitled Database"
-        
-        var properties: [String: PropertyDefinition] = [:]
-        
-        for (propertyName, propertyData) in propertiesDict {
-            guard let propertyDict = propertyData as? [String: Any],
-                  let type = propertyDict["type"] as? String else {
-                continue
-            }
-            
-            var selectOptions: [SelectOption]?
-            
-            // Extract select options if it's a select property
-            if type == "select",
-               let selectDict = propertyDict["select"] as? [String: Any],
-               let optionsArray = selectDict["options"] as? [[String: Any]] {
-                selectOptions = optionsArray.compactMap { optionDict in
-                    guard let id = optionDict["id"] as? String,
-                          let name = optionDict["name"] as? String,
-                          let color = optionDict["color"] as? String else {
-                        return nil
-                    }
-                    return SelectOption(id: id, name: name, color: color)
-                }
-            }
-            
-            properties[propertyName] = PropertyDefinition(
-                type: type,
-                name: propertyName,
-                selectOptions: selectOptions
-            )
-        }
-        
-        return DatabaseSchema(id: id, title: title, properties: properties)
     }
     
     private func saveTodosToSharedCache(_ todos: [TodoItem]) {
