@@ -6,6 +6,19 @@ struct ContentView: View {
     @State private var apiKey = ""
     @State private var databaseId = ""
     @State private var showingSetup = false
+    @State private var sortOption: SortOption = .createdDate
+    
+    enum SortOption: String, CaseIterable {
+        case createdDate = "Created Date"
+        case dueDate = "Due Date"
+        case priority = "Priority"
+        case status = "Status"
+        case title = "Title"
+        
+        var displayName: String {
+            return self.rawValue
+        }
+    }
     
     var body: some View {
         NavigationView {
@@ -100,6 +113,25 @@ struct ContentView: View {
             }
         }
         .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                Menu {
+                    ForEach(SortOption.allCases, id: \.self) { option in
+                        Button(action: {
+                            sortOption = option
+                        }) {
+                            HStack {
+                                Text(option.displayName)
+                                if sortOption == option {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    Image(systemName: "arrow.up.arrow.down")
+                }
+            }
+            
             ToolbarItem(placement: .navigationBarTrailing) {
                 Menu {
                     Button("Refresh", action: {
@@ -128,7 +160,7 @@ struct ContentView: View {
             if notionService.todos.isEmpty {
                 emptyState
             } else {
-                ForEach(notionService.todos) { todo in
+                ForEach(sortedTodos) { todo in
                     TodoRowView(todo: todo) { updatedTodo, newStatus in
                         notionService.updateTodoStatus(updatedTodo, status: newStatus)
                     }
@@ -136,6 +168,33 @@ struct ContentView: View {
             }
         }
         .listStyle(.insetGrouped)
+    }
+    
+    private var sortedTodos: [TodoItem] {
+        switch sortOption {
+        case .createdDate:
+            return notionService.todos.sorted { $0.createdAt > $1.createdAt }
+        case .dueDate:
+            return notionService.todos.sorted { todo1, todo2 in
+                // Sort by due date, putting items without due dates at the end
+                switch (todo1.dueDate, todo2.dueDate) {
+                case (nil, nil): return todo1.createdAt > todo2.createdAt
+                case (nil, _): return false
+                case (_, nil): return true
+                case (let date1?, let date2?): return date1 < date2
+                }
+            }
+        case .priority:
+            return notionService.todos.sorted { todo1, todo2 in
+                let priority1 = todo1.priority?.sortOrder ?? 0
+                let priority2 = todo2.priority?.sortOrder ?? 0
+                return priority1 > priority2
+            }
+        case .status:
+            return notionService.todos.sorted { $0.status.rawValue < $1.status.rawValue }
+        case .title:
+            return notionService.todos.sorted { $0.title.lowercased() < $1.title.lowercased() }
+        }
     }
     
     private var emptyState: some View {
@@ -209,18 +268,26 @@ struct TodoRowView: View {
                         .foregroundColor(.white)
                         .clipShape(Capsule())
                     
-                    if let dueDate = todo.dueDate {
-                        Text(dueDateText(for: dueDate))
-                            .font(.caption)
-                            .foregroundColor(dueDateColor(for: dueDate))
-                    }
-                    
-                    Spacer()
-                    
                     if let priority = todo.priority {
                         Text(priority.displayName)
                             .font(.caption)
                             .foregroundColor(priority.color)
+                    }
+                    
+                    Spacer()
+                    
+                    if let dueDate = todo.dueDate {
+                        HStack(spacing: 4) {
+                            Image(systemName: "calendar")
+                                .font(.caption2)
+                            Text(dueDateText(for: dueDate))
+                                .font(.caption)
+                        }
+                        .foregroundColor(dueDateColor(for: dueDate))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(dueDateColor(for: dueDate).opacity(0.1))
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
                     }
                 }
             }

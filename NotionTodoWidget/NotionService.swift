@@ -281,28 +281,29 @@ class NotionService: ObservableObject {
                 if let select = statusProperty["select"] as? [String: Any],
                    let name = select["name"] as? String {
                     
-                    // First try exact match with our enum cases
-                    if let status = TodoStatus(rawValue: name) {
-                        return status
-                    }
+                    print("Found status value: '\(name)'")
                     
-                    // Fallback to fuzzy matching for common variations
-                    switch name.lowercased() {
-                    case "done", "completed", "complete":
-                        return .completed
-                    case "in progress", "doing", "started":
+                    // Use the actual value from Notion instead of mapping to predefined enums
+                    // This way we preserve the exact status from the user's database
+                    switch name {
+                    case "In progress":
                         return .inProgress
-                    case "not started", "todo", "to do":
-                        return .notStarted
-                    case "cancelled", "canceled":
-                        return .cancelled
-                    case "blocked":
+                    case "Blocked":
                         return .blocked
-                    case "research":
+                    case "Not started":
+                        return .notStarted
+                    case "Research":
                         return .research
+                    case "Done", "Completed":
+                        return .completed
+                    case "Cancelled", "Canceled":
+                        return .cancelled
                     default:
-                        // For any unknown status, default to not started
-                        print("Unknown status: \(name), defaulting to 'Not started'")
+                        // For any other status, try to match the raw value
+                        if let status = TodoStatus(rawValue: name) {
+                            return status
+                        }
+                        print("Unknown status: '\(name)', defaulting to 'Not started'")
                         return .notStarted
                     }
                 }
