@@ -214,25 +214,44 @@ class NotionService: ObservableObject {
             throw NSError(domain: "NotionService", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid response format"])
         }
         
+        print("📊 Parsing \(results.count) todo items from Notion...")
+        
         var todos: [TodoItem] = []
         
-        for result in results {
+        for (index, result) in results.enumerated() {
             guard let id = result["id"] as? String,
                   let properties = result["properties"] as? [String: Any] else {
+                print("❌ Item \(index): Missing id or properties")
                 continue
+            }
+            
+            print("\n🔍 Item \(index) (\(id)):")
+            print("📝 Available properties: \(properties.keys.joined(separator: ", "))")
+            
+            // Log the full properties structure for debugging
+            for (key, value) in properties {
+                if let propertyDict = value as? [String: Any] {
+                    print("   \(key): \(propertyDict)")
+                } else {
+                    print("   \(key): \(value)")
+                }
             }
             
             // Extract title - try common property names
             let title = extractTitle(from: properties)
+            print("📋 Title: '\(title)'")
             
             // Extract status
             let status = extractStatus(from: properties)
+            print("🏷️ Status: '\(status.rawValue)'")
             
             // Extract priority
             let priority = extractPriority(from: properties)
+            print("⚡ Priority: \(priority?.rawValue ?? "none")")
             
             // Extract due date
             let dueDate = extractDueDate(from: properties)
+            print("📅 Due date: \(dueDate?.description ?? "none")")
             
             // Extract created/updated dates
             let createdAt = extractDate(from: result["created_time"] as? String) ?? Date()
@@ -251,6 +270,7 @@ class NotionService: ObservableObject {
             todos.append(todo)
         }
         
+        print("\n✅ Successfully parsed \(todos.count) todos")
         return todos
     }
     
@@ -275,46 +295,60 @@ class NotionService: ObservableObject {
         // Try common status property names
         let statusKeys = ["Status", "status", "Done", "done", "Completed", "completed"]
         
+        print("🔍 Looking for status in properties: \(properties.keys.joined(separator: ", "))")
+        
         for key in statusKeys {
+            print("   Checking key: '\(key)'")
             if let statusProperty = properties[key] as? [String: Any] {
+                print("   Found property '\(key)': \(statusProperty)")
+                
                 // Handle select property
-                if let select = statusProperty["select"] as? [String: Any],
-                   let name = select["name"] as? String {
-                    
-                    print("Found status value: '\(name)'")
-                    
-                    // Use the actual value from Notion instead of mapping to predefined enums
-                    // This way we preserve the exact status from the user's database
-                    switch name {
-                    case "In progress":
-                        return .inProgress
-                    case "Blocked":
-                        return .blocked
-                    case "Not started":
-                        return .notStarted
-                    case "Research":
-                        return .research
-                    case "Done", "Completed":
-                        return .completed
-                    case "Cancelled", "Canceled":
-                        return .cancelled
-                    default:
-                        // For any other status, try to match the raw value
-                        if let status = TodoStatus(rawValue: name) {
-                            return status
+                if let select = statusProperty["select"] as? [String: Any] {
+                    print("   Select property found: \(select)")
+                    if let name = select["name"] as? String {
+                        print("   ✅ Found status value: '\(name)'")
+                        
+                        // Use the actual value from Notion
+                        switch name {
+                        case "In progress":
+                            return .inProgress
+                        case "Blocked":
+                            return .blocked
+                        case "Not started":
+                            return .notStarted
+                        case "Research":
+                            return .research
+                        case "Done", "Completed":
+                            return .completed
+                        case "Cancelled", "Canceled":
+                            return .cancelled
+                        default:
+                            // For any other status, try to match the raw value
+                            if let status = TodoStatus(rawValue: name) {
+                                print("   ✅ Matched to enum: \(status.rawValue)")
+                                return status
+                            }
+                            print("   ⚠️ Unknown status: '\(name)', defaulting to 'Not started'")
+                            return .notStarted
                         }
-                        print("Unknown status: '\(name)', defaulting to 'Not started'")
-                        return .notStarted
+                    } else {
+                        print("   ❌ Select property has no 'name' field")
                     }
+                } else {
+                    print("   ❌ Property '\(key)' is not a select property")
                 }
                 
                 // Handle checkbox property
                 if let checkbox = statusProperty["checkbox"] as? Bool {
+                    print("   ✅ Found checkbox status: \(checkbox)")
                     return checkbox ? .completed : .notStarted
                 }
+            } else {
+                print("   ❌ Property '\(key)' not found or not a dictionary")
             }
         }
         
+        print("   ⚠️ No status property found, defaulting to 'Not started'")
         return .notStarted
     }
     
@@ -357,14 +391,32 @@ class NotionService: ObservableObject {
         // Try common due date property names
         let dueDateKeys = ["Due Date", "Due", "due_date", "due", "Deadline", "deadline"]
         
+        print("🔍 Looking for due date in properties: \(properties.keys.joined(separator: ", "))")
+        
         for key in dueDateKeys {
-            if let dateProperty = properties[key] as? [String: Any],
-               let date = dateProperty["date"] as? [String: Any],
-               let start = date["start"] as? String {
-                return extractDate(from: start)
+            print("   Checking key: '\(key)'")
+            if let dateProperty = properties[key] as? [String: Any] {
+                print("   Found property '\(key)': \(dateProperty)")
+                
+                if let date = dateProperty["date"] as? [String: Any] {
+                    print("   Date object found: \(date)")
+                    if let start = date["start"] as? String {
+                        print("   ✅ Found due date string: '\(start)'")
+                        let parsedDate = extractDate(from: start)
+                        print("   📅 Parsed date: \(parsedDate?.description ?? "failed to parse")")
+                        return parsedDate
+                    } else {
+                        print("   ❌ Date object has no 'start' field")
+                    }
+                } else {
+                    print("   ❌ Property '\(key)' has no 'date' object")
+                }
+            } else {
+                print("   ❌ Property '\(key)' not found or not a dictionary")
             }
         }
         
+        print("   ⚠️ No due date property found")
         return nil
     }
     
