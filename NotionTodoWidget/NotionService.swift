@@ -102,6 +102,13 @@ class NotionService: ObservableObject {
                 }
                 
                 do {
+                    // Save the raw schema response to Documents for debugging
+                    if let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+                        let schemaFile = documentsPath.appendingPathComponent("notion_schema.json")
+                        try data.write(to: schemaFile)
+                        print("📝 Schema saved to: \(schemaFile.path)")
+                    }
+                    
                     let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
                     if let properties = json?["properties"] as? [String: Any] {
                         self.databaseProperties = properties
@@ -196,6 +203,13 @@ class NotionService: ObservableObject {
                 }
                 
                 do {
+                    // Save the raw todos response to Documents for debugging
+                    if let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+                        let todosFile = documentsPath.appendingPathComponent("notion_todos.json")
+                        try data.write(to: todosFile)
+                        print("📝 Todos response saved to: \(todosFile.path)")
+                    }
+                    
                     self.todos = try self.parseNotionResponse(data)
                     // Cache the data for the widget
                     self.saveTodosToSharedCache(self.todos)

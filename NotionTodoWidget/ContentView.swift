@@ -140,6 +140,14 @@ struct ContentView: View {
                         WidgetCenter.shared.reloadAllTimelines()
                     })
                     
+                    Button("Show Debug Files") {
+                        if let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+                            print("📁 Documents folder: \(documentsPath.path)")
+                            print("📄 Schema file: \(documentsPath.appendingPathComponent("notion_schema.json").path)")
+                            print("📄 Todos file: \(documentsPath.appendingPathComponent("notion_todos.json").path)")
+                        }
+                    }
+                    
                     Button("Sign Out", role: .destructive, action: {
                         notionService.signOut()
                     })
