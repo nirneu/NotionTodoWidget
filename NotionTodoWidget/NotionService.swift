@@ -7,9 +7,15 @@ class NotionService: ObservableObject {
     
     @Published var isAuthenticated = false
     @Published var todos: [TodoItem] = []
+    @Published var filteredTodos: [TodoItem] = []
     @Published var isLoading = false
     @Published var errorMessage: String?
     @Published var databaseProperties: [String: Any] = [:]
+    
+    // Sorting and filtering options
+    @Published var sortConfiguration: SortConfiguration = SortConfiguration(primary: .dueDate, secondary: .priority)
+    @Published var statusFilter: Set<TodoStatus> = Set(TodoStatus.allCases)
+    @Published var priorityFilter: Set<TodoPriority> = Set(TodoPriority.allCases)
     
     private var apiKey: String? {
         get {
@@ -31,6 +37,8 @@ class NotionService: ObservableObject {
     
     private init() {
         checkAuthenticationStatus()
+        // Apply initial filtering and sorting
+        applyFiltersAndSorting()
     }
     
     // MARK: - Authentication
@@ -211,8 +219,10 @@ class NotionService: ObservableObject {
                     }
                     
                     self.todos = try self.parseNotionResponse(data)
+                    // Apply filtering and sorting
+                    self.applyFiltersAndSorting()
                     // Cache the data for the widget
-                    self.saveTodosToSharedCache(self.todos)
+                    self.saveTodosToSharedCache(self.filteredTodos)
                     // Refresh all widgets
                     WidgetCenter.shared.reloadAllTimelines()
                 } catch {
@@ -316,40 +326,22 @@ class NotionService: ObservableObject {
             if let statusProperty = properties[key] as? [String: Any] {
                 print("   Found property '\(key)': \(statusProperty)")
                 
-                // Handle select property
+                // Handle the new Notion "status" property type (different from select)
+                if let status = statusProperty["status"] as? [String: Any] {
+                    print("   Status property found: \(status)")
+                    if let name = status["name"] as? String {
+                        print("   ✅ Found status value: '\(name)'")
+                        return mapToTodoStatus(name)
+                    }
+                }
+                
+                // Handle select property (fallback)
                 if let select = statusProperty["select"] as? [String: Any] {
                     print("   Select property found: \(select)")
                     if let name = select["name"] as? String {
                         print("   ✅ Found status value: '\(name)'")
-                        
-                        // Use the actual value from Notion
-                        switch name {
-                        case "In progress":
-                            return .inProgress
-                        case "Blocked":
-                            return .blocked
-                        case "Not started":
-                            return .notStarted
-                        case "Research":
-                            return .research
-                        case "Done", "Completed":
-                            return .completed
-                        case "Cancelled", "Canceled":
-                            return .cancelled
-                        default:
-                            // For any other status, try to match the raw value
-                            if let status = TodoStatus(rawValue: name) {
-                                print("   ✅ Matched to enum: \(status.rawValue)")
-                                return status
-                            }
-                            print("   ⚠️ Unknown status: '\(name)', defaulting to 'Not started'")
-                            return .notStarted
-                        }
-                    } else {
-                        print("   ❌ Select property has no 'name' field")
+                        return mapToTodoStatus(name)
                     }
-                } else {
-                    print("   ❌ Property '\(key)' is not a select property")
                 }
                 
                 // Handle checkbox property
@@ -364,6 +356,32 @@ class NotionService: ObservableObject {
         
         print("   ⚠️ No status property found, defaulting to 'Not started'")
         return .notStarted
+    }
+    
+    private func mapToTodoStatus(_ statusName: String) -> TodoStatus {
+        // Map actual Notion status values to our enum cases
+        switch statusName {
+        case "In progress":
+            return .inProgress
+        case "Blocked":
+            return .blocked
+        case "Not started":
+            return .notStarted
+        case "Research":
+            return .research
+        case "Done", "Completed":
+            return .completed
+        case "Cancelled", "Canceled":
+            return .cancelled
+        default:
+            // For any other status, try to match the raw value
+            if let status = TodoStatus(rawValue: statusName) {
+                print("   ✅ Matched to enum: \(status.rawValue)")
+                return status
+            }
+            print("   ⚠️ Unknown status: '\(statusName)', defaulting to 'Not started'")
+            return .notStarted
+        }
     }
     
     private func extractPriority(from properties: [String: Any]) -> TodoPriority? {
@@ -403,7 +421,7 @@ class NotionService: ObservableObject {
     
     private func extractDueDate(from properties: [String: Any]) -> Date? {
         // Try common due date property names
-        let dueDateKeys = ["Due Date", "Due", "due_date", "due", "Deadline", "deadline"]
+        let dueDateKeys = ["Due date", "Due Date", "Due", "due_date", "due", "Deadline", "deadline"]
         
         print("🔍 Looking for due date in properties: \(properties.keys.joined(separator: ", "))")
         
@@ -412,6 +430,7 @@ class NotionService: ObservableObject {
             if let dateProperty = properties[key] as? [String: Any] {
                 print("   Found property '\(key)': \(dateProperty)")
                 
+                // Handle both null dates and date objects
                 if let date = dateProperty["date"] as? [String: Any] {
                     print("   Date object found: \(date)")
                     if let start = date["start"] as? String {
@@ -422,8 +441,11 @@ class NotionService: ObservableObject {
                     } else {
                         print("   ❌ Date object has no 'start' field")
                     }
+                } else if dateProperty["date"] == nil || (dateProperty["date"] as? NSNull) != nil {
+                    print("   ⚪ Property '\(key)' has null date - no due date set")
+                    return nil
                 } else {
-                    print("   ❌ Property '\(key)' has no 'date' object")
+                    print("   ❌ Property '\(key)' has unexpected date format: \(dateProperty["date"] ?? "nil")")
                 }
             } else {
                 print("   ❌ Property '\(key)' not found or not a dictionary")
@@ -437,8 +459,21 @@ class NotionService: ObservableObject {
     private func extractDate(from dateString: String?) -> Date? {
         guard let dateString = dateString else { return nil }
         
-        let formatter = ISO8601DateFormatter()
-        return formatter.date(from: dateString)
+        // Try ISO8601 first (for date-time formats)
+        let iso8601Formatter = ISO8601DateFormatter()
+        if let date = iso8601Formatter.date(from: dateString) {
+            return date
+        }
+        
+        // Try date-only format (YYYY-MM-DD)
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd"
+        if let date = dateFormatter.date(from: dateString) {
+            return date
+        }
+        
+        print("⚠️ Failed to parse date string: '\(dateString)'")
+        return nil
     }
     
     private func saveTodosToSharedCache(_ todos: [TodoItem]) {
@@ -470,5 +505,120 @@ class NotionService: ObservableObject {
             )
             todos[index] = updatedTodo
         }
+    }
+    
+    // MARK: - Filtering and Sorting
+    
+    func applyFiltersAndSorting() {
+        // First apply filters
+        filteredTodos = todos.filter { todo in
+            let statusMatch = statusFilter.contains(todo.status)
+            let priorityMatch = todo.priority == nil || priorityFilter.contains(todo.priority!)
+            return statusMatch && priorityMatch
+        }
+        
+        // Then apply sorting
+        filteredTodos.sort { todo1, todo2 in
+            // Primary sort
+            let primaryResult = compareTodos(todo1, todo2, by: sortConfiguration.primary)
+            
+            if primaryResult != .orderedSame {
+                let ascending = sortConfiguration.primaryOrder == .ascending
+                return ascending ? primaryResult == .orderedAscending : primaryResult == .orderedDescending
+            }
+            
+            // Secondary sort (if primary is equal and secondary exists)
+            if let secondary = sortConfiguration.secondary {
+                let secondaryResult = compareTodos(todo1, todo2, by: secondary)
+                let ascending = sortConfiguration.secondaryOrder == .ascending
+                return ascending ? secondaryResult == .orderedAscending : secondaryResult == .orderedDescending
+            }
+            
+            return false
+        }
+    }
+    
+    private func compareTodos(_ todo1: TodoItem, _ todo2: TodoItem, by option: SortOption) -> ComparisonResult {
+        switch option {
+        case .title:
+            return todo1.title.localizedCaseInsensitiveCompare(todo2.title)
+        case .status:
+            return todo1.status.rawValue.localizedCaseInsensitiveCompare(todo2.status.rawValue)
+        case .priority:
+            let priority1 = todo1.priority?.sortOrder ?? 0
+            let priority2 = todo2.priority?.sortOrder ?? 0
+            if priority1 < priority2 { return .orderedAscending }
+            if priority1 > priority2 { return .orderedDescending }
+            return .orderedSame
+        case .dueDate:
+            let date1 = todo1.dueDate ?? Date.distantFuture
+            let date2 = todo2.dueDate ?? Date.distantFuture
+            return date1.compare(date2)
+        case .createdAt:
+            return todo1.createdAt.compare(todo2.createdAt)
+        case .updatedAt:
+            return todo1.updatedAt.compare(todo2.updatedAt)
+        }
+    }
+    
+    // MARK: - Filter Management
+    
+    func toggleStatusFilter(_ status: TodoStatus) {
+        if statusFilter.contains(status) {
+            statusFilter.remove(status)
+        } else {
+            statusFilter.insert(status)
+        }
+        applyFiltersAndSorting()
+    }
+    
+    func togglePriorityFilter(_ priority: TodoPriority) {
+        if priorityFilter.contains(priority) {
+            priorityFilter.remove(priority)
+        } else {
+            priorityFilter.insert(priority)
+        }
+        applyFiltersAndSorting()
+    }
+    
+    func clearAllFilters() {
+        statusFilter = Set(TodoStatus.allCases)
+        priorityFilter = Set(TodoPriority.allCases)
+        applyFiltersAndSorting()
+    }
+    
+    func setSortConfiguration(_ config: SortConfiguration) {
+        sortConfiguration = config
+        applyFiltersAndSorting()
+    }
+    
+    func setPrimarySort(_ option: SortOption, order: SortOrder) {
+        sortConfiguration = SortConfiguration(
+            primary: option,
+            secondary: sortConfiguration.secondary,
+            primaryOrder: order,
+            secondaryOrder: sortConfiguration.secondaryOrder
+        )
+        applyFiltersAndSorting()
+    }
+    
+    func setSecondarySort(_ option: SortOption?, order: SortOrder) {
+        sortConfiguration = SortConfiguration(
+            primary: sortConfiguration.primary,
+            secondary: option,
+            primaryOrder: sortConfiguration.primaryOrder,
+            secondaryOrder: order
+        )
+        applyFiltersAndSorting()
+    }
+    
+    func togglePrimarySortOrder() {
+        let newOrder: SortOrder = sortConfiguration.primaryOrder == .ascending ? .descending : .ascending
+        setPrimarySort(sortConfiguration.primary, order: newOrder)
+    }
+    
+    func toggleSecondarySortOrder() {
+        let newOrder: SortOrder = sortConfiguration.secondaryOrder == .ascending ? .descending : .ascending
+        setSecondarySort(sortConfiguration.secondary, order: newOrder)
     }
 }

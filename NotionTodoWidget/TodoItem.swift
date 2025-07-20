@@ -75,6 +75,57 @@ enum TodoPriority: String, Codable, CaseIterable {
     }
 }
 
+enum SortOption: String, CaseIterable {
+    case title = "Title"
+    case status = "Status"
+    case priority = "Priority"
+    case dueDate = "Due Date"
+    case createdAt = "Created Date"
+    case updatedAt = "Updated Date"
+    
+    var displayName: String {
+        return self.rawValue
+    }
+}
+
+struct SortConfiguration {
+    let primary: SortOption
+    let secondary: SortOption?
+    let primaryOrder: SortOrder
+    let secondaryOrder: SortOrder
+    
+    init(primary: SortOption, secondary: SortOption? = nil, primaryOrder: SortOrder = .ascending, secondaryOrder: SortOrder = .ascending) {
+        self.primary = primary
+        self.secondary = secondary
+        self.primaryOrder = primaryOrder
+        self.secondaryOrder = secondaryOrder
+    }
+    
+    var displayName: String {
+        if let secondary = secondary {
+            return "\(primary.displayName) \(primaryOrder.symbol), \(secondary.displayName) \(secondaryOrder.symbol)"
+        } else {
+            return "\(primary.displayName) \(primaryOrder.symbol)"
+        }
+    }
+}
+
+enum SortOrder: String, CaseIterable {
+    case ascending = "Ascending"
+    case descending = "Descending"
+    
+    var displayName: String {
+        return self.rawValue
+    }
+    
+    var symbol: String {
+        switch self {
+        case .ascending: return "↑"
+        case .descending: return "↓"
+        }
+    }
+}
+
 // MARK: - Sample Data
 
 extension TodoItem {

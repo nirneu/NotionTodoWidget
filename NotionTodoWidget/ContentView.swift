@@ -6,19 +6,8 @@ struct ContentView: View {
     @State private var apiKey = ""
     @State private var databaseId = ""
     @State private var showingSetup = false
-    @State private var sortOption: SortOption = .createdDate
-    
-    enum SortOption: String, CaseIterable {
-        case createdDate = "Created Date"
-        case dueDate = "Due Date"
-        case priority = "Priority"
-        case status = "Status"
-        case title = "Title"
-        
-        var displayName: String {
-            return self.rawValue
-        }
-    }
+    @State private var showingFilters = false
+    @State private var showingSortOptions = false
     
     var body: some View {
         NavigationView {
@@ -114,21 +103,22 @@ struct ContentView: View {
         }
         .toolbar {
             ToolbarItem(placement: .navigationBarLeading) {
-                Menu {
-                    ForEach(SortOption.allCases, id: \.self) { option in
-                        Button(action: {
-                            sortOption = option
-                        }) {
-                            HStack {
-                                Text(option.displayName)
-                                if sortOption == option {
-                                    Image(systemName: "checkmark")
-                                }
-                            }
-                        }
+                Button(action: {
+                    showingSortOptions = true
+                }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.up.arrow.down")
+                        Text(notionService.sortConfiguration.primaryOrder.symbol)
+                            .font(.caption)
                     }
-                } label: {
-                    Image(systemName: "arrow.up.arrow.down")
+                }
+            }
+            
+            ToolbarItem(placement: .navigationBarLeading) {
+                Button(action: {
+                    showingFilters = true
+                }) {
+                    Image(systemName: "line.3.horizontal.decrease.circle")
                 }
             }
             
@@ -165,10 +155,10 @@ struct ContentView: View {
     
     private var todoList: some View {
         List {
-            if notionService.todos.isEmpty {
+            if notionService.filteredTodos.isEmpty {
                 emptyState
             } else {
-                ForEach(sortedTodos) { todo in
+                ForEach(notionService.filteredTodos) { todo in
                     TodoRowView(todo: todo) { updatedTodo, newStatus in
                         notionService.updateTodoStatus(updatedTodo, status: newStatus)
                     }
@@ -176,52 +166,46 @@ struct ContentView: View {
             }
         }
         .listStyle(.insetGrouped)
-    }
-    
-    private var sortedTodos: [TodoItem] {
-        switch sortOption {
-        case .createdDate:
-            return notionService.todos.sorted { $0.createdAt > $1.createdAt }
-        case .dueDate:
-            return notionService.todos.sorted { todo1, todo2 in
-                // Sort by due date, putting items without due dates at the end
-                switch (todo1.dueDate, todo2.dueDate) {
-                case (nil, nil): return todo1.createdAt > todo2.createdAt
-                case (nil, _): return false
-                case (_, nil): return true
-                case (let date1?, let date2?): return date1 < date2
-                }
-            }
-        case .priority:
-            return notionService.todos.sorted { todo1, todo2 in
-                let priority1 = todo1.priority?.sortOrder ?? 0
-                let priority2 = todo2.priority?.sortOrder ?? 0
-                return priority1 > priority2
-            }
-        case .status:
-            return notionService.todos.sorted { $0.status.rawValue < $1.status.rawValue }
-        case .title:
-            return notionService.todos.sorted { $0.title.lowercased() < $1.title.lowercased() }
+        .sheet(isPresented: $showingFilters) {
+            FilterView()
+                .environmentObject(notionService)
+        }
+        .sheet(isPresented: $showingSortOptions) {
+            SortOptionsView()
+                .environmentObject(notionService)
         }
     }
     
+    
     private var emptyState: some View {
         VStack(spacing: 16) {
-            Image(systemName: "checkmark.circle")
+            Image(systemName: isFiltered ? "line.3.horizontal.decrease.circle" : "checkmark.circle")
                 .font(.system(size: 48))
                 .foregroundColor(.secondary)
             
-            Text("No todos found")
+            Text(isFiltered ? "No todos match filters" : "No todos found")
                 .font(.headline)
             
-            Text("Your todos will appear here")
+            Text(isFiltered ? "Try adjusting your filters" : "Your todos will appear here")
                 .font(.body)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
+            
+            if isFiltered {
+                Button("Clear Filters") {
+                    notionService.clearAllFilters()
+                }
+                .buttonStyle(.borderedProminent)
+            }
         }
         .padding(32)
         .frame(maxWidth: .infinity)
         .listRowSeparator(.hidden)
+    }
+    
+    private var isFiltered: Bool {
+        notionService.statusFilter.count < TodoStatus.allCases.count ||
+        notionService.priorityFilter.count < TodoPriority.allCases.count
     }
     
     private var groupedTodos: [TodoPriority: [TodoItem]] {
@@ -315,9 +299,9 @@ struct TodoRowView: View {
     }
     
     private func dueDateText(for date: Date) -> String {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .short
-        return formatter.localizedString(for: date, relativeTo: Date())
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        return formatter.string(from: date)
     }
     
     private func dueDateColor(for date: Date) -> Color {
@@ -350,6 +334,174 @@ struct TodoRowView: View {
         case .medium: return .blue
         case .high: return .orange
         case .urgent: return .red
+        }
+    }
+}
+
+// MARK: - Filter View
+
+struct FilterView: View {
+    @EnvironmentObject var notionService: NotionService
+    @Environment(\.dismiss) private var dismiss
+    
+    var body: some View {
+        NavigationView {
+            List {
+                Section("Status Filters") {
+                    ForEach(TodoStatus.allCases, id: \.self) { status in
+                        FilterToggleRow(
+                            title: status.displayName,
+                            isEnabled: notionService.statusFilter.contains(status)
+                        ) {
+                            notionService.toggleStatusFilter(status)
+                        }
+                    }
+                }
+                
+                Section("Priority Filters") {
+                    ForEach(TodoPriority.allCases, id: \.self) { priority in
+                        FilterToggleRow(
+                            title: priority.displayName,
+                            isEnabled: notionService.priorityFilter.contains(priority)
+                        ) {
+                            notionService.togglePriorityFilter(priority)
+                        }
+                    }
+                }
+                
+                Section {
+                    Button("Clear All Filters") {
+                        notionService.clearAllFilters()
+                    }
+                    .foregroundColor(.red)
+                }
+            }
+            .navigationTitle("Filters")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct FilterToggleRow: View {
+    let title: String
+    let isEnabled: Bool
+    let action: () -> Void
+    
+    var body: some View {
+        Button(action: action) {
+            HStack {
+                Text(title)
+                    .foregroundColor(.primary)
+                Spacer()
+                Image(systemName: isEnabled ? "checkmark.circle.fill" : "circle")
+                    .foregroundColor(isEnabled ? .accentColor : .secondary)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Sort Options View
+
+struct SortOptionsView: View {
+    @EnvironmentObject var notionService: NotionService
+    @Environment(\.dismiss) private var dismiss
+    
+    var body: some View {
+        NavigationView {
+            List {
+                Section("Primary Sort") {
+                    ForEach(SortOption.allCases, id: \.self) { option in
+                        HStack {
+                            Text(option.displayName)
+                            Spacer()
+                            if notionService.sortConfiguration.primary == option {
+                                Button(action: {
+                                    notionService.togglePrimarySortOrder()
+                                }) {
+                                    Text(notionService.sortConfiguration.primaryOrder.symbol)
+                                        .foregroundColor(.accentColor)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            if notionService.sortConfiguration.primary == option {
+                                notionService.togglePrimarySortOrder()
+                            } else {
+                                notionService.setPrimarySort(option, order: .ascending)
+                            }
+                        }
+                    }
+                }
+                
+                Section("Secondary Sort (Optional)") {
+                    HStack {
+                        Text("None")
+                        Spacer()
+                        if notionService.sortConfiguration.secondary == nil {
+                            Image(systemName: "checkmark")
+                                .foregroundColor(.accentColor)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        notionService.setSecondarySort(nil, order: .ascending)
+                    }
+                    
+                    ForEach(SortOption.allCases, id: \.self) { option in
+                        if option != notionService.sortConfiguration.primary {
+                            HStack {
+                                Text(option.displayName)
+                                Spacer()
+                                if notionService.sortConfiguration.secondary == option {
+                                    Button(action: {
+                                        notionService.toggleSecondarySortOrder()
+                                    }) {
+                                        Text(notionService.sortConfiguration.secondaryOrder.symbol)
+                                            .foregroundColor(.accentColor)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                if notionService.sortConfiguration.secondary == option {
+                                    notionService.toggleSecondarySortOrder()
+                                } else {
+                                    notionService.setSecondarySort(option, order: .ascending)
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                Section {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Current Sort")
+                            .font(.headline)
+                        Text(notionService.sortConfiguration.displayName)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+            .navigationTitle("Sort Options")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+            }
         }
     }
 }

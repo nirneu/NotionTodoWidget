@@ -114,46 +114,74 @@ struct TodoWidgetEntryView: View {
     var entry: TodoEntry
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 12) {
+            // Header
             HStack {
-                Text("Todo")
-                    .font(.headline)
-                    .fontWeight(.semibold)
+                HStack(spacing: 8) {
+                    Image(systemName: "checklist")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(.accentColor)
+                    
+                    Text("Todo Widget")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(.primary)
+                }
+                
                 Spacer()
-                Text("\(entry.todos.count)")
-                    .font(.caption)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.blue.opacity(0.2))
-                    .foregroundColor(.blue)
-                    .clipShape(Capsule())
+                
+                HStack(spacing: 4) {
+                    Text("\(entry.todos.count)")
+                        .font(.system(size: 12, weight: .bold))
+                    Text("tasks")
+                        .font(.system(size: 10, weight: .medium))
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Color.accentColor.opacity(0.15))
+                .foregroundColor(.accentColor)
+                .clipShape(Capsule())
             }
             
+            // Content
             if entry.todos.isEmpty {
-                VStack(spacing: 4) {
+                VStack(spacing: 8) {
                     Image(systemName: "checkmark.circle.fill")
-                        .font(.title2)
+                        .font(.system(size: 24))
                         .foregroundColor(.green)
                     Text("All done!")
-                        .font(.caption)
+                        .font(.system(size: 12, weight: .medium))
                         .foregroundColor(.secondary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ForEach(entry.todos.prefix(3)) { todo in
-                    TodoRowView(todo: todo)
+                VStack(spacing: 8) {
+                    ForEach(entry.todos.prefix(3)) { todo in
+                        TodoRowView(todo: todo)
+                        
+                        if todo.id != entry.todos.prefix(3).last?.id {
+                            Divider()
+                                .padding(.horizontal, 4)
+                        }
+                    }
                 }
                 
                 if entry.todos.count > 3 {
-                    Text("+ \(entry.todos.count - 3) more")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
+                    HStack {
+                        Spacer()
+                        Text("+ \(entry.todos.count - 3) more tasks")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(.secondary)
+                            .padding(.top, 4)
+                        Spacer()
+                    }
                 }
             }
             
-            Spacer()
+            Spacer(minLength: 0)
         }
-        .padding()
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 
@@ -161,33 +189,93 @@ struct TodoRowView: View {
     let todo: TodoItem
     
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 10) {
+            // Status indicator
             Image(systemName: todo.status == .completed ? "checkmark.circle.fill" : "circle")
                 .foregroundColor(todo.status == .completed ? .green : .secondary)
-                .font(.caption)
+                .font(.system(size: 14))
             
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 4) {
+                // Title
                 Text(todo.title)
-                    .font(.caption)
+                    .font(.system(size: 13, weight: .medium))
                     .lineLimit(1)
                     .strikethrough(todo.status == .completed)
                     .foregroundColor(todo.status == .completed ? .secondary : .primary)
                 
-                if let dueDate = todo.dueDate {
-                    Text(dueDate, style: .date)
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
+                // Status and due date row
+                HStack(spacing: 8) {
+                    // Status badge
+                    Text(todo.status.displayName)
+                        .font(.system(size: 9, weight: .medium))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(statusColor(for: todo.status))
+                        .foregroundColor(.white)
+                        .clipShape(Capsule())
+                    
+                    // Due date
+                    if let dueDate = todo.dueDate {
+                        HStack(spacing: 2) {
+                            Image(systemName: "calendar")
+                                .font(.system(size: 8))
+                            Text(relativeDateString(for: dueDate))
+                                .font(.system(size: 9, weight: .medium))
+                        }
+                        .foregroundColor(dueDateColor(for: dueDate))
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 2)
+                        .background(dueDateColor(for: dueDate).opacity(0.15))
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                    }
+                    
+                    Spacer()
                 }
             }
             
-            Spacer()
-            
-            if let priority = todo.priority, priority != .low {
-                Circle()
-                    .fill(priority.color)
-                    .frame(width: 6, height: 6)
+            // Priority indicator
+            if let priority = todo.priority {
+                VStack(spacing: 1) {
+                    ForEach(0..<min(priority.sortOrder, 3), id: \.self) { _ in
+                        Circle()
+                            .fill(priority.color)
+                            .frame(width: 3, height: 3)
+                    }
+                }
             }
         }
+        .padding(.vertical, 2)
+    }
+    
+    private func statusColor(for status: TodoStatus) -> Color {
+        switch status {
+        case .notStarted: return .gray
+        case .inProgress: return .blue
+        case .completed: return .green
+        case .cancelled: return .red
+        case .blocked: return .red
+        case .research: return .orange
+        }
+    }
+    
+    private func dueDateColor(for date: Date) -> Color {
+        let daysDifference = Calendar.current.dateComponents([.day], from: Date(), to: date).day ?? 0
+        
+        if daysDifference < 0 {
+            return .red
+        } else if daysDifference == 0 {
+            return .orange
+        } else if daysDifference <= 3 {
+            return .yellow
+        } else {
+            return .secondary
+        }
+    }
+    
+    private func relativeDateString(for date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        return formatter.string(from: date)
     }
 }
 
