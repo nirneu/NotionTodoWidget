@@ -41,27 +41,42 @@ struct TodoTimelineProvider: TimelineProvider {
     func getTimeline(in context: Context, completion: @escaping (Timeline<TodoEntry>) -> Void) {
         let currentDate = Date()
         
-        // Try to get fresh data from NotionService
-        let notionService = NotionService.shared
+        // Always try to get cached data first, regardless of authentication state
+        let cachedTodos = getCachedTodos()
         
-        if notionService.isAuthenticated {
-            // Use cached data
-            let cachedTodos = getCachedTodos()
+        if !cachedTodos.isEmpty {
+            // We have cached data, use it
             let todos = Array(cachedTodos.prefix(3))
             let entry = TodoEntry(date: currentDate, todos: todos)
             
             let nextUpdate = Calendar.current.date(byAdding: .minute, value: 5, to: currentDate)!
             let timeline = Timeline(entries: [entry], policy: .after(nextUpdate))
             
+            print("Widget: Using cached data with \(todos.count) todos")
             completion(timeline)
         } else {
-            // Not authenticated, use sample data
-            let entry = TodoEntry(date: currentDate, todos: Array(TodoItem.sampleData.prefix(3)))
+            // No cached data available, check authentication
+            let notionService = NotionService.shared
             
-            let nextUpdate = Calendar.current.date(byAdding: .minute, value: 15, to: currentDate)!
-            let timeline = Timeline(entries: [entry], policy: .after(nextUpdate))
-            
-            completion(timeline)
+            if notionService.isAuthenticated {
+                // Authenticated but no cached data - show empty state
+                let entry = TodoEntry(date: currentDate, todos: [])
+                
+                let nextUpdate = Calendar.current.date(byAdding: .minute, value: 2, to: currentDate)!
+                let timeline = Timeline(entries: [entry], policy: .after(nextUpdate))
+                
+                print("Widget: Authenticated but no cached data, showing empty state")
+                completion(timeline)
+            } else {
+                // Not authenticated, use sample data
+                let entry = TodoEntry(date: currentDate, todos: Array(TodoItem.sampleData.prefix(3)))
+                
+                let nextUpdate = Calendar.current.date(byAdding: .minute, value: 15, to: currentDate)!
+                let timeline = Timeline(entries: [entry], policy: .after(nextUpdate))
+                
+                print("Widget: Not authenticated, using sample data")
+                completion(timeline)
+            }
         }
     }
     
@@ -167,9 +182,9 @@ struct TodoRowView: View {
             
             Spacer()
             
-            if todo.priority != .low {
+            if let priority = todo.priority, priority != .low {
                 Circle()
-                    .fill(todo.priority.color)
+                    .fill(priority.color)
                     .frame(width: 6, height: 6)
             }
         }

@@ -1,4 +1,5 @@
 import SwiftUI
+import WidgetKit
 
 struct ContentView: View {
     @StateObject private var notionService = NotionService.shared
@@ -103,6 +104,8 @@ struct ContentView: View {
                 Menu {
                     Button("Refresh", action: {
                         notionService.fetchTodos()
+                        // Force widget refresh
+                        WidgetCenter.shared.reloadAllTimelines()
                     })
                     
                     Button("Sign Out", role: .destructive, action: {
@@ -115,6 +118,8 @@ struct ContentView: View {
         }
         .refreshable {
             notionService.fetchTodos()
+            // Force widget refresh
+            WidgetCenter.shared.reloadAllTimelines()
         }
     }
     
@@ -153,7 +158,7 @@ struct ContentView: View {
     }
     
     private var groupedTodos: [TodoPriority: [TodoItem]] {
-        Dictionary(grouping: notionService.todos) { $0.priority }
+        Dictionary(grouping: notionService.todos.filter { $0.priority != nil }) { $0.priority! }
     }
     
     // MARK: - Actions
@@ -212,9 +217,11 @@ struct TodoRowView: View {
                     
                     Spacer()
                     
-                    Text(todo.priority.displayName)
-                        .font(.caption)
-                        .foregroundColor(todo.priority.color)
+                    if let priority = todo.priority {
+                        Text(priority.displayName)
+                            .font(.caption)
+                            .foregroundColor(priority.color)
+                    }
                 }
             }
         }
@@ -227,6 +234,8 @@ struct TodoRowView: View {
         case .inProgress: return .blue
         case .completed: return .green
         case .cancelled: return .red
+        case .blocked: return .red
+        case .research: return .orange
         }
     }
     

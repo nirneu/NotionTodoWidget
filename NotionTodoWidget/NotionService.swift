@@ -38,6 +38,11 @@ class NotionService: ObservableObject {
         self.apiKey = apiKey
         self.databaseId = databaseId
         checkAuthenticationStatus()
+        
+        // If we become authenticated, immediately fetch fresh data
+        if isAuthenticated {
+            fetchTodos()
+        }
     }
     
     private func checkAuthenticationStatus() {
@@ -199,6 +204,13 @@ class NotionService: ObservableObject {
                 // Handle select property
                 if let select = statusProperty["select"] as? [String: Any],
                    let name = select["name"] as? String {
+                    
+                    // First try exact match with our enum cases
+                    if let status = TodoStatus(rawValue: name) {
+                        return status
+                    }
+                    
+                    // Fallback to fuzzy matching for common variations
                     switch name.lowercased() {
                     case "done", "completed", "complete":
                         return .completed
@@ -208,8 +220,14 @@ class NotionService: ObservableObject {
                         return .notStarted
                     case "cancelled", "canceled":
                         return .cancelled
+                    case "blocked":
+                        return .blocked
+                    case "research":
+                        return .research
                     default:
-                        break
+                        // For any unknown status, default to not started
+                        print("Unknown status: \(name), defaulting to 'Not started'")
+                        return .notStarted
                     }
                 }
                 
@@ -223,7 +241,7 @@ class NotionService: ObservableObject {
         return .notStarted
     }
     
-    private func extractPriority(from properties: [String: Any]) -> TodoPriority {
+    private func extractPriority(from properties: [String: Any]) -> TodoPriority? {
         // Try common priority property names
         let priorityKeys = ["Priority", "priority", "Importance", "importance"]
         
@@ -231,6 +249,13 @@ class NotionService: ObservableObject {
             if let priorityProperty = properties[key] as? [String: Any],
                let select = priorityProperty["select"] as? [String: Any],
                let name = select["name"] as? String {
+                
+                // First try exact match with our enum cases
+                if let priority = TodoPriority(rawValue: name) {
+                    return priority
+                }
+                
+                // Fallback to fuzzy matching
                 switch name.lowercased() {
                 case "urgent", "critical":
                     return .urgent
@@ -241,12 +266,14 @@ class NotionService: ObservableObject {
                 case "low":
                     return .low
                 default:
+                    print("Unknown priority: \(name), setting to nil")
                     break
                 }
             }
         }
         
-        return .medium
+        // Return nil if no priority is set
+        return nil
     }
     
     private func extractDueDate(from properties: [String: Any]) -> Date? {

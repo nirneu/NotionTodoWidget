@@ -6,7 +6,7 @@ struct TodoItem: Codable, Identifiable, Equatable {
     let title: String
     let status: TodoStatus
     let dueDate: Date?
-    let priority: TodoPriority
+    let priority: TodoPriority?
     let createdAt: Date
     let updatedAt: Date
     
@@ -15,7 +15,7 @@ struct TodoItem: Codable, Identifiable, Equatable {
         title: String,
         status: TodoStatus = .notStarted,
         dueDate: Date? = nil,
-        priority: TodoPriority = .medium,
+        priority: TodoPriority? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
@@ -34,6 +34,8 @@ enum TodoStatus: String, Codable, CaseIterable {
     case inProgress = "In progress"
     case completed = "Done"
     case cancelled = "Cancelled"
+    case blocked = "Blocked"
+    case research = "Research"
     
     var displayName: String {
         return self.rawValue
