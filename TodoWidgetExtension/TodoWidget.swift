@@ -81,26 +81,90 @@ struct TodoTimelineProvider: TimelineProvider {
     }
     
     private func getCachedTodos() -> [TodoItem] {
+        // Load todos from cache
+        var todos: [TodoItem] = []
+        
         // Try App Groups first - this is the primary shared storage
         if let sharedDefaults = UserDefaults(suiteName: "group.com.notiontodowidget.app"),
            let data = sharedDefaults.data(forKey: "cachedTodos"),
-           let todos = try? JSONDecoder().decode([TodoItem].self, from: data),
-           !todos.isEmpty {
-            print("Widget: Successfully loaded \(todos.count) todos from App Groups")
-            return todos
+           let cachedTodos = try? JSONDecoder().decode([TodoItem].self, from: data),
+           !cachedTodos.isEmpty {
+            print("Widget: Successfully loaded \(cachedTodos.count) todos from App Groups")
+            todos = cachedTodos
+        } else if let data = UserDefaults.standard.data(forKey: "cachedTodos"),
+                  let cachedTodos = try? JSONDecoder().decode([TodoItem].self, from: data),
+                  !cachedTodos.isEmpty {
+            print("Widget: Loaded \(cachedTodos.count) todos from regular UserDefaults")
+            todos = cachedTodos
+        } else {
+            print("Widget: No cached todos found, using empty array")
+            return []
         }
         
-        // Fallback to regular UserDefaults
-        if let data = UserDefaults.standard.data(forKey: "cachedTodos"),
-           let todos = try? JSONDecoder().decode([TodoItem].self, from: data),
-           !todos.isEmpty {
-            print("Widget: Loaded \(todos.count) todos from regular UserDefaults")
-            return todos
-        }
+        // Apply the same filters and sorting as the main app
+        let filteredAndSortedTodos = applyFiltersAndSorting(to: todos)
+        print("Widget: After filtering and sorting: \(filteredAndSortedTodos.count) todos")
         
-        print("Widget: No cached todos found, using empty array")
-        return []
+        return filteredAndSortedTodos
     }
+    
+    private func applyFiltersAndSorting(to todos: [TodoItem]) -> [TodoItem] {
+        // Load persistent preferences
+        let sortConfig = PreferencesManager.shared.loadSortConfiguration()
+        let statusFilter = PreferencesManager.shared.loadStatusFilter()
+        let priorityFilter = PreferencesManager.shared.loadPriorityFilter()
+        
+        // Apply filters
+        let filteredTodos = todos.filter { todo in
+            let statusMatch = statusFilter.contains(todo.status)
+            let priorityMatch = todo.priority == nil || priorityFilter.contains(todo.priority!)
+            return statusMatch && priorityMatch
+        }
+        
+        // Apply sorting
+        return filteredTodos.sorted { todo1, todo2 in
+            // Primary sort
+            let primaryResult = compareTodos(todo1, todo2, by: sortConfig.primary)
+            
+            if primaryResult != .orderedSame {
+                let ascending = sortConfig.primaryOrder == .ascending
+                return ascending ? primaryResult == .orderedAscending : primaryResult == .orderedDescending
+            }
+            
+            // Secondary sort (if primary is equal and secondary exists)
+            if let secondary = sortConfig.secondary {
+                let secondaryResult = compareTodos(todo1, todo2, by: secondary)
+                let ascending = sortConfig.secondaryOrder == .ascending
+                return ascending ? secondaryResult == .orderedAscending : secondaryResult == .orderedDescending
+            }
+            
+            return false
+        }
+    }
+    
+    private func compareTodos(_ todo1: TodoItem, _ todo2: TodoItem, by option: SortOption) -> ComparisonResult {
+        switch option {
+        case .title:
+            return todo1.title.localizedCaseInsensitiveCompare(todo2.title)
+        case .status:
+            return todo1.status.rawValue.localizedCaseInsensitiveCompare(todo2.status.rawValue)
+        case .priority:
+            let priority1 = todo1.priority?.sortOrder ?? 0
+            let priority2 = todo2.priority?.sortOrder ?? 0
+            if priority1 < priority2 { return .orderedAscending }
+            if priority1 > priority2 { return .orderedDescending }
+            return .orderedSame
+        case .dueDate:
+            let date1 = todo1.dueDate ?? Date.distantFuture
+            let date2 = todo2.dueDate ?? Date.distantFuture
+            return date1.compare(date2)
+        case .createdAt:
+            return todo1.createdAt.compare(todo2.createdAt)
+        case .updatedAt:
+            return todo1.updatedAt.compare(todo2.updatedAt)
+        }
+    }
+    
     
     private func saveTodosToCache(_ todos: [TodoItem]) {
         if let data = try? JSONEncoder().encode(todos) {

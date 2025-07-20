@@ -33,6 +33,19 @@ struct ContentView: View {
         } message: {
             Text(notionService.errorMessage ?? "")
         }
+        .overlay(alignment: .top) {
+            if let message = notionService.statusUpdateMessage {
+                Text(message)
+                    .font(.subheadline)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .background(.green)
+                    .foregroundColor(.white)
+                    .clipShape(Capsule())
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .animation(.easeInOut(duration: 0.3), value: notionService.statusUpdateMessage)
+            }
+        }
     }
     
     // MARK: - Setup View
@@ -244,6 +257,11 @@ struct TodoRowView: View {
                     .foregroundColor(todo.status.isCompleted ? .green : .secondary)
             }
             .buttonStyle(.plain)
+            .contextMenu {
+                StatusContextMenu(currentStatus: todo.status) { newStatus in
+                    onStatusUpdate(todo, newStatus)
+                }
+            }
             
             VStack(alignment: .leading, spacing: 4) {
                 Text(todo.title)
@@ -499,6 +517,28 @@ struct SortOptionsView: View {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Done") {
                         dismiss()
+                    }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Status Context Menu
+
+struct StatusContextMenu: View {
+    let currentStatus: TodoStatus
+    let onStatusChange: (TodoStatus) -> Void
+    
+    var body: some View {
+        ForEach(TodoStatus.allCases, id: \.self) { status in
+            Button(action: {
+                onStatusChange(status)
+            }) {
+                HStack {
+                    Text(status.displayName)
+                    if status == currentStatus {
+                        Image(systemName: "checkmark")
                     }
                 }
             }

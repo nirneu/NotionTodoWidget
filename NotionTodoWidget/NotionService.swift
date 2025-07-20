@@ -12,10 +12,11 @@ class NotionService: ObservableObject {
     @Published var errorMessage: String?
     @Published var databaseProperties: [String: Any] = [:]
     
-    // Sorting and filtering options
-    @Published var sortConfiguration: SortConfiguration = SortConfiguration(primary: .dueDate, secondary: .priority)
-    @Published var statusFilter: Set<TodoStatus> = Set(TodoStatus.allCases)
-    @Published var priorityFilter: Set<TodoPriority> = Set(TodoPriority.allCases)
+    // Sorting and filtering options (loaded from persistent storage)
+    @Published var sortConfiguration: SortConfiguration
+    @Published var statusFilter: Set<TodoStatus>
+    @Published var priorityFilter: Set<TodoPriority>
+    @Published var statusUpdateMessage: String?
     
     private var apiKey: String? {
         get {
@@ -35,7 +36,13 @@ class NotionService: ObservableObject {
         }
     }
     
+    
     private init() {
+        // Load persistent preferences first
+        self.sortConfiguration = PreferencesManager.shared.loadSortConfiguration()
+        self.statusFilter = PreferencesManager.shared.loadStatusFilter()
+        self.priorityFilter = PreferencesManager.shared.loadPriorityFilter()
+        
         checkAuthenticationStatus()
         // Apply initial filtering and sorting
         applyFiltersAndSorting()
@@ -493,6 +500,7 @@ class NotionService: ObservableObject {
     }
     
     func updateTodoStatus(_ todo: TodoItem, status: TodoStatus) {
+        // Update local copy immediately for responsive UI
         if let index = todos.firstIndex(where: { $0.id == todo.id }) {
             let updatedTodo = TodoItem(
                 id: todo.id,
@@ -504,7 +512,83 @@ class NotionService: ObservableObject {
                 updatedAt: Date()
             )
             todos[index] = updatedTodo
+            applyFiltersAndSorting()
+            saveTodosToSharedCache(filteredTodos)
+            WidgetCenter.shared.reloadAllTimelines()
         }
+        
+        // Update in Notion asynchronously
+        updateNotionTaskStatus(pageId: todo.id, status: status)
+    }
+    
+    private func updateNotionTaskStatus(pageId: String, status: TodoStatus) {
+        guard let apiKey = apiKey else {
+            print("❌ No API key available for updating task")
+            return
+        }
+        
+        guard let url = URL(string: "https://api.notion.com/v1/pages/\(pageId)") else {
+            print("❌ Invalid URL for page update")
+            return
+        }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "PATCH"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("2022-06-28", forHTTPHeaderField: "Notion-Version")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        // Use the actual property name from your database
+        let updateBody: [String: Any] = [
+            "properties": [
+                "Status": [
+                    "status": [
+                        "name": status.rawValue
+                    ]
+                ]
+            ]
+        ]
+        
+        do {
+            request.httpBody = try JSONSerialization.data(withJSONObject: updateBody)
+        } catch {
+            print("❌ Failed to serialize update request: \(error)")
+            return
+        }
+        
+        print("🔄 Updating task \(pageId) to status: \(status.rawValue)")
+        
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            DispatchQueue.main.async {
+                if let error = error {
+                    print("❌ Network error updating task: \(error.localizedDescription)")
+                    self.errorMessage = "Failed to update task: \(error.localizedDescription)"
+                    return
+                }
+                
+                if let httpResponse = response as? HTTPURLResponse {
+                    if httpResponse.statusCode == 200 {
+                        print("✅ Successfully updated task \(pageId) to \(status.rawValue)")
+                        self.statusUpdateMessage = "Task updated to \(status.rawValue)"
+                        
+                        // Clear message after 3 seconds
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                            self.statusUpdateMessage = nil
+                        }
+                    } else {
+                        print("❌ Failed to update task. Status code: \(httpResponse.statusCode)")
+                        if let data = data,
+                           let errorResponse = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                           let message = errorResponse["message"] as? String {
+                            print("❌ Notion API error: \(message)")
+                            self.errorMessage = "Failed to update task: \(message)"
+                        } else {
+                            self.errorMessage = "Failed to update task: HTTP \(httpResponse.statusCode)"
+                        }
+                    }
+                }
+            }
+        }.resume()
     }
     
     // MARK: - Filtering and Sorting
@@ -569,6 +653,7 @@ class NotionService: ObservableObject {
         } else {
             statusFilter.insert(status)
         }
+        PreferencesManager.shared.saveStatusFilter(statusFilter)
         applyFiltersAndSorting()
     }
     
@@ -578,17 +663,21 @@ class NotionService: ObservableObject {
         } else {
             priorityFilter.insert(priority)
         }
+        PreferencesManager.shared.savePriorityFilter(priorityFilter)
         applyFiltersAndSorting()
     }
     
     func clearAllFilters() {
         statusFilter = Set(TodoStatus.allCases)
         priorityFilter = Set(TodoPriority.allCases)
+        PreferencesManager.shared.saveStatusFilter(statusFilter)
+        PreferencesManager.shared.savePriorityFilter(priorityFilter)
         applyFiltersAndSorting()
     }
     
     func setSortConfiguration(_ config: SortConfiguration) {
         sortConfiguration = config
+        PreferencesManager.shared.saveSortConfiguration(config)
         applyFiltersAndSorting()
     }
     
@@ -599,6 +688,7 @@ class NotionService: ObservableObject {
             primaryOrder: order,
             secondaryOrder: sortConfiguration.secondaryOrder
         )
+        PreferencesManager.shared.saveSortConfiguration(sortConfiguration)
         applyFiltersAndSorting()
     }
     
@@ -609,6 +699,7 @@ class NotionService: ObservableObject {
             primaryOrder: sortConfiguration.primaryOrder,
             secondaryOrder: order
         )
+        PreferencesManager.shared.saveSortConfiguration(sortConfiguration)
         applyFiltersAndSorting()
     }
     

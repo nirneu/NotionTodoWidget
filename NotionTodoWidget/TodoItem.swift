@@ -75,7 +75,7 @@ enum TodoPriority: String, Codable, CaseIterable {
     }
 }
 
-enum SortOption: String, CaseIterable {
+enum SortOption: String, CaseIterable, Codable {
     case title = "Title"
     case status = "Status"
     case priority = "Priority"
@@ -88,7 +88,7 @@ enum SortOption: String, CaseIterable {
     }
 }
 
-struct SortConfiguration {
+struct SortConfiguration: Codable {
     let primary: SortOption
     let secondary: SortOption?
     let primaryOrder: SortOrder
@@ -110,7 +110,7 @@ struct SortConfiguration {
     }
 }
 
-enum SortOrder: String, CaseIterable {
+enum SortOrder: String, CaseIterable, Codable {
     case ascending = "Ascending"
     case descending = "Descending"
     
