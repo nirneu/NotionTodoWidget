@@ -21,7 +21,7 @@ struct ContentView: View {
         }
         .onAppear {
             if notionService.isAuthenticated {
-                notionService.fetchTodos()
+                notionService.fetchDatabaseSchema()
             }
         }
         .alert("Error", isPresented: .constant(notionService.errorMessage != nil)) {
@@ -103,7 +103,7 @@ struct ContentView: View {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Menu {
                     Button("Refresh", action: {
-                        notionService.fetchTodos()
+                        notionService.fetchDatabaseSchema()
                         // Force widget refresh
                         WidgetCenter.shared.reloadAllTimelines()
                     })
@@ -117,7 +117,7 @@ struct ContentView: View {
             }
         }
         .refreshable {
-            notionService.fetchTodos()
+            notionService.fetchDatabaseSchema()
             // Force widget refresh
             WidgetCenter.shared.reloadAllTimelines()
         }

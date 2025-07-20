@@ -9,6 +9,7 @@ class NotionService: ObservableObject {
     @Published var todos: [TodoItem] = []
     @Published var isLoading = false
     @Published var errorMessage: String?
+    @Published var databaseSchema: DatabaseSchema?
     
     private var apiKey: String? {
         get {
@@ -39,9 +40,9 @@ class NotionService: ObservableObject {
         self.databaseId = databaseId
         checkAuthenticationStatus()
         
-        // If we become authenticated, immediately fetch fresh data
+        // If we become authenticated, immediately fetch schema then data
         if isAuthenticated {
-            fetchTodos()
+            fetchDatabaseSchema()
         }
     }
     
@@ -57,6 +58,61 @@ class NotionService: ObservableObject {
     }
     
     // MARK: - Data Operations
+    
+    func fetchDatabaseSchema() {
+        guard let apiKey = apiKey, let databaseId = databaseId else {
+            errorMessage = "API key or database ID not configured"
+            return
+        }
+        
+        isLoading = true
+        errorMessage = nil
+        
+        let url = URL(string: "https://api.notion.com/v1/databases/\(databaseId)")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("2022-06-28", forHTTPHeaderField: "Notion-Version")
+        
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            DispatchQueue.main.async {
+                if let error = error {
+                    self.errorMessage = "Network error: \(error.localizedDescription)"
+                    self.isLoading = false
+                    return
+                }
+                
+                guard let data = data else {
+                    self.errorMessage = "No data received"
+                    self.isLoading = false
+                    return
+                }
+                
+                if let httpResponse = response as? HTTPURLResponse {
+                    if httpResponse.statusCode != 200 {
+                        if let errorData = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                           let message = errorData["message"] as? String {
+                            self.errorMessage = "Notion API error: \(message)"
+                        } else {
+                            self.errorMessage = "HTTP error: \(httpResponse.statusCode)"
+                        }
+                        self.isLoading = false
+                        return
+                    }
+                }
+                
+                do {
+                    self.databaseSchema = try self.parseDatabaseSchema(data)
+                    print("Database schema loaded: \(self.databaseSchema?.properties.keys.joined(separator: ", ") ?? "none")")
+                    // After getting schema, fetch the actual todos
+                    self.fetchTodos()
+                } catch {
+                    self.errorMessage = "Failed to parse database schema: \(error.localizedDescription)"
+                    self.isLoading = false
+                }
+            }
+        }.resume()
+    }
     
     func fetchTodos() {
         guard let apiKey = apiKey, let databaseId = databaseId else {
@@ -296,6 +352,49 @@ class NotionService: ObservableObject {
         
         let formatter = ISO8601DateFormatter()
         return formatter.date(from: dateString)
+    }
+    
+    private func parseDatabaseSchema(_ data: Data) throws -> DatabaseSchema {
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        guard let id = json?["id"] as? String,
+              let propertiesDict = json?["properties"] as? [String: Any] else {
+            throw NSError(domain: "NotionService", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid database schema format"])
+        }
+        
+        let title = (json?["title"] as? [[String: Any]])?.first?["plain_text"] as? String ?? "Untitled Database"
+        
+        var properties: [String: PropertyDefinition] = [:]
+        
+        for (propertyName, propertyData) in propertiesDict {
+            guard let propertyDict = propertyData as? [String: Any],
+                  let type = propertyDict["type"] as? String else {
+                continue
+            }
+            
+            var selectOptions: [SelectOption]?
+            
+            // Extract select options if it's a select property
+            if type == "select",
+               let selectDict = propertyDict["select"] as? [String: Any],
+               let optionsArray = selectDict["options"] as? [[String: Any]] {
+                selectOptions = optionsArray.compactMap { optionDict in
+                    guard let id = optionDict["id"] as? String,
+                          let name = optionDict["name"] as? String,
+                          let color = optionDict["color"] as? String else {
+                        return nil
+                    }
+                    return SelectOption(id: id, name: name, color: color)
+                }
+            }
+            
+            properties[propertyName] = PropertyDefinition(
+                type: type,
+                name: propertyName,
+                selectOptions: selectOptions
+            )
+        }
+        
+        return DatabaseSchema(id: id, title: title, properties: properties)
     }
     
     private func saveTodosToSharedCache(_ todos: [TodoItem]) {
