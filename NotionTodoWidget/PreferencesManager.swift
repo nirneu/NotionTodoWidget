@@ -3,7 +3,7 @@ import Foundation
 class PreferencesManager {
     static let shared = PreferencesManager()
     
-    private let suiteName = "group.com.notiontodowidget.app"
+    private let suiteName = "group.com.nirneu.notiontodowidget"
     
     private init() {}
     

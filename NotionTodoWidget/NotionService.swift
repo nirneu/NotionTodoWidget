@@ -486,7 +486,7 @@ class NotionService: ObservableObject {
     private func saveTodosToSharedCache(_ todos: [TodoItem]) {
         if let data = try? JSONEncoder().encode(todos) {
             // Primary storage: App Groups (this is what the widget should read)
-            if let sharedDefaults = UserDefaults(suiteName: "group.com.notiontodowidget.app") {
+            if let sharedDefaults = UserDefaults(suiteName: "group.com.nirneu.notiontodowidget") {
                 sharedDefaults.set(data, forKey: "cachedTodos")
                 print("App: Saved \(todos.count) todos to App Groups")
             } else {
@@ -655,6 +655,9 @@ class NotionService: ObservableObject {
         }
         PreferencesManager.shared.saveStatusFilter(statusFilter)
         applyFiltersAndSorting()
+        // Update widget with new filtered data
+        saveTodosToSharedCache(filteredTodos)
+        WidgetCenter.shared.reloadAllTimelines()
     }
     
     func togglePriorityFilter(_ priority: TodoPriority) {
@@ -665,6 +668,9 @@ class NotionService: ObservableObject {
         }
         PreferencesManager.shared.savePriorityFilter(priorityFilter)
         applyFiltersAndSorting()
+        // Update widget with new filtered data
+        saveTodosToSharedCache(filteredTodos)
+        WidgetCenter.shared.reloadAllTimelines()
     }
     
     func clearAllFilters() {
@@ -673,12 +679,18 @@ class NotionService: ObservableObject {
         PreferencesManager.shared.saveStatusFilter(statusFilter)
         PreferencesManager.shared.savePriorityFilter(priorityFilter)
         applyFiltersAndSorting()
+        // Update widget with new filtered data
+        saveTodosToSharedCache(filteredTodos)
+        WidgetCenter.shared.reloadAllTimelines()
     }
     
     func setSortConfiguration(_ config: SortConfiguration) {
         sortConfiguration = config
         PreferencesManager.shared.saveSortConfiguration(config)
         applyFiltersAndSorting()
+        // Update widget with new sorted data
+        saveTodosToSharedCache(filteredTodos)
+        WidgetCenter.shared.reloadAllTimelines()
     }
     
     func setPrimarySort(_ option: SortOption, order: SortOrder) {
@@ -690,6 +702,9 @@ class NotionService: ObservableObject {
         )
         PreferencesManager.shared.saveSortConfiguration(sortConfiguration)
         applyFiltersAndSorting()
+        // Update widget with new sorted data
+        saveTodosToSharedCache(filteredTodos)
+        WidgetCenter.shared.reloadAllTimelines()
     }
     
     func setSecondarySort(_ option: SortOption?, order: SortOrder) {
@@ -701,6 +716,9 @@ class NotionService: ObservableObject {
         )
         PreferencesManager.shared.saveSortConfiguration(sortConfiguration)
         applyFiltersAndSorting()
+        // Update widget with new sorted data
+        saveTodosToSharedCache(filteredTodos)
+        WidgetCenter.shared.reloadAllTimelines()
     }
     
     func togglePrimarySortOrder() {

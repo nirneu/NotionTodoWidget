@@ -81,131 +81,61 @@ struct TodoTimelineProvider: TimelineProvider {
     }
     
     private func getCachedTodos() -> [TodoItem] {
-        // Load todos from cache
+        // Load todos from cache - the main app already applies filters and sorting before saving
         var todos: [TodoItem] = []
         
         // Try App Groups first - this is the primary shared storage
-        if let sharedDefaults = UserDefaults(suiteName: "group.com.notiontodowidget.app"),
-           let data = sharedDefaults.data(forKey: "cachedTodos"),
-           let cachedTodos = try? JSONDecoder().decode([TodoItem].self, from: data),
-           !cachedTodos.isEmpty {
-            print("Widget: Successfully loaded \(cachedTodos.count) todos from App Groups")
-            todos = cachedTodos
-        } else if let data = UserDefaults.standard.data(forKey: "cachedTodos"),
-                  let cachedTodos = try? JSONDecoder().decode([TodoItem].self, from: data),
-                  !cachedTodos.isEmpty {
-            print("Widget: Loaded \(cachedTodos.count) todos from regular UserDefaults")
-            todos = cachedTodos
+        print("Widget: Attempting to load from App Groups...")
+        if let sharedDefaults = UserDefaults(suiteName: "group.com.nirneu.notiontodowidget") {
+            print("Widget: Successfully created shared UserDefaults")
+            if let data = sharedDefaults.data(forKey: "cachedTodos") {
+                print("Widget: Found cached data (\(data.count) bytes)")
+                if let cachedTodos = try? JSONDecoder().decode([TodoItem].self, from: data), !cachedTodos.isEmpty {
+                    print("Widget: Successfully decoded \(cachedTodos.count) todos from App Groups")
+                    print("Widget: First todo: '\(cachedTodos.first?.title ?? "unknown")'")
+                    todos = cachedTodos
+                } else {
+                    print("Widget: Failed to decode todos from App Groups data")
+                }
+            } else {
+                print("Widget: No data found in App Groups for key 'cachedTodos'")
+            }
         } else {
-            print("Widget: No cached todos found, using empty array")
+            print("Widget: Failed to create shared UserDefaults with suite name")
+        }
+        
+        // If App Groups failed, try regular UserDefaults as fallback
+        if todos.isEmpty {
+            print("Widget: Trying regular UserDefaults as fallback...")
+            if let data = UserDefaults.standard.data(forKey: "cachedTodos") {
+                print("Widget: Found fallback data (\(data.count) bytes)")
+                if let cachedTodos = try? JSONDecoder().decode([TodoItem].self, from: data), !cachedTodos.isEmpty {
+                    print("Widget: Successfully loaded \(cachedTodos.count) todos from regular UserDefaults")
+                    todos = cachedTodos
+                } else {
+                    print("Widget: Failed to decode todos from regular UserDefaults")
+                }
+            } else {
+                print("Widget: No fallback data found in regular UserDefaults")
+            }
+        }
+        
+        if todos.isEmpty {
+            print("Widget: No cached todos found anywhere, returning empty array")
             return []
         }
         
-        // Apply the same filters and sorting as the main app
-        let filteredAndSortedTodos = applyFiltersAndSorting(to: todos)
-        print("Widget: After filtering and sorting: \(filteredAndSortedTodos.count) todos")
-        
-        return filteredAndSortedTodos
+        print("Widget: Returning \(todos.count) todos (already filtered and sorted by main app)")
+        return todos
     }
     
-    private func applyFiltersAndSorting(to todos: [TodoItem]) -> [TodoItem] {
-        // Load persistent preferences
-        let sortConfig = PreferencesManager.shared.loadSortConfiguration()
-        let statusFilter = PreferencesManager.shared.loadStatusFilter()
-        let priorityFilter = PreferencesManager.shared.loadPriorityFilter()
-        
-        // Apply filters
-        let filteredTodos = todos.filter { todo in
-            let statusMatch = statusFilter.contains(todo.status)
-            let priorityMatch = todo.priority == nil || priorityFilter.contains(todo.priority!)
-            return statusMatch && priorityMatch
-        }
-        
-        // Apply sorting
-        return filteredTodos.sorted { todo1, todo2 in
-            // Primary sort
-            let primaryResult = compareTodos(todo1, todo2, by: sortConfig.primary)
-            
-            if primaryResult != .orderedSame {
-                let ascending = sortConfig.primaryOrder == .ascending
-                return ascending ? primaryResult == .orderedAscending : primaryResult == .orderedDescending
-            }
-            
-            // Secondary sort (if primary is equal and secondary exists)
-            if let secondary = sortConfig.secondary {
-                let secondaryResult = compareTodos(todo1, todo2, by: secondary)
-                let ascending = sortConfig.secondaryOrder == .ascending
-                return ascending ? secondaryResult == .orderedAscending : secondaryResult == .orderedDescending
-            }
-            
-            return false
-        }
-    }
-    
-    private func compareTodos(_ todo1: TodoItem, _ todo2: TodoItem, by option: SortOption) -> ComparisonResult {
-        switch option {
-        case .title:
-            return todo1.title.localizedCaseInsensitiveCompare(todo2.title)
-        case .status:
-            return todo1.status.rawValue.localizedCaseInsensitiveCompare(todo2.status.rawValue)
-        case .priority:
-            let priority1 = todo1.priority?.sortOrder ?? 0
-            let priority2 = todo2.priority?.sortOrder ?? 0
-            if priority1 < priority2 { return .orderedAscending }
-            if priority1 > priority2 { return .orderedDescending }
-            return .orderedSame
-        case .dueDate:
-            let date1 = todo1.dueDate ?? Date.distantFuture
-            let date2 = todo2.dueDate ?? Date.distantFuture
-            return date1.compare(date2)
-        case .createdAt:
-            return todo1.createdAt.compare(todo2.createdAt)
-        case .updatedAt:
-            return todo1.updatedAt.compare(todo2.updatedAt)
-        }
-    }
-    
-    
-    private func saveTodosToCache(_ todos: [TodoItem]) {
-        if let data = try? JSONEncoder().encode(todos) {
-            UserDefaults.standard.set(data, forKey: "cachedTodos")
-            UserDefaults(suiteName: "group.com.notiontodowidget.app")?.set(data, forKey: "cachedTodos")
-        }
-    }
 }
 
 struct TodoWidgetEntryView: View {
     var entry: TodoEntry
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            // Header
-            HStack {
-                HStack(spacing: 8) {
-                    Image(systemName: "checklist")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(.accentColor)
-                    
-                    Text("Todo Widget")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(.primary)
-                }
-                
-                Spacer()
-                
-                HStack(spacing: 4) {
-                    Text("\(entry.todos.count)")
-                        .font(.system(size: 12, weight: .bold))
-                    Text("tasks")
-                        .font(.system(size: 10, weight: .medium))
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(Color.accentColor.opacity(0.15))
-                .foregroundColor(.accentColor)
-                .clipShape(Capsule())
-            }
-            
+        VStack(alignment: .leading, spacing: 6) {
             // Content
             if entry.todos.isEmpty {
                 VStack(spacing: 8) {
@@ -218,13 +148,13 @@ struct TodoWidgetEntryView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                VStack(spacing: 8) {
+                VStack(spacing: 4) {
                     ForEach(entry.todos.prefix(3)) { todo in
                         TodoRowView(todo: todo)
                         
                         if todo.id != entry.todos.prefix(3).last?.id {
                             Divider()
-                                .padding(.horizontal, 4)
+                                .padding(.horizontal, 2)
                         }
                     }
                 }
@@ -241,11 +171,9 @@ struct TodoWidgetEntryView: View {
                 }
             }
             
-            Spacer(minLength: 0)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(.horizontal, 8)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     }
 }
 
@@ -259,51 +187,63 @@ struct TodoRowView: View {
                 .foregroundColor(todo.status == .completed ? .green : .secondary)
                 .font(.system(size: 14))
             
-            VStack(alignment: .leading, spacing: 4) {
-                // Title
+            VStack(alignment: .leading, spacing: 1) {
+                // Title - even larger text
                 Text(todo.title)
-                    .font(.system(size: 13, weight: .medium))
-                    .lineLimit(1)
+                    .font(.system(size: 15, weight: .medium))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
                     .strikethrough(todo.status == .completed)
                     .foregroundColor(todo.status == .completed ? .secondary : .primary)
                 
-                // Status and due date row
-                HStack(spacing: 8) {
-                    // Status badge
-                    Text(todo.status.displayName)
-                        .font(.system(size: 9, weight: .medium))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(statusColor(for: todo.status))
-                        .foregroundColor(.white)
-                        .clipShape(Capsule())
-                    
-                    // Due date
-                    if let dueDate = todo.dueDate {
-                        HStack(spacing: 2) {
-                            Image(systemName: "calendar")
-                                .font(.system(size: 8))
-                            Text(relativeDateString(for: dueDate))
-                                .font(.system(size: 9, weight: .medium))
+                // Status, Priority, and Due date row
+                HStack {
+                    // Status and Priority grouped together on left
+                    HStack(spacing: 6) {
+                        // Status badge
+                        Text(todo.status.displayName)
+                            .font(.system(size: 8, weight: .medium))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(statusColor(for: todo.status))
+                            .clipShape(Capsule())
+                        
+                        // Priority next to status
+                        if let priority = todo.priority {
+                            HStack(spacing: 2) {
+                                Image(systemName: priorityIcon(for: priority))
+                                    .font(.system(size: 7, weight: .bold))
+                                    .foregroundColor(.white)
+                                Text(priority.displayName)
+                                    .font(.system(size: 8, weight: .medium))
+                                    .foregroundColor(.white)
+                            }
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(updatedPriorityColor(for: priority))
+                            .clipShape(Capsule())
                         }
-                        .foregroundColor(dueDateColor(for: dueDate))
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 2)
-                        .background(dueDateColor(for: dueDate).opacity(0.15))
-                        .clipShape(RoundedRectangle(cornerRadius: 4))
                     }
                     
                     Spacer()
-                }
-            }
-            
-            // Priority indicator
-            if let priority = todo.priority {
-                VStack(spacing: 1) {
-                    ForEach(0..<min(priority.sortOrder, 3), id: \.self) { _ in
-                        Circle()
-                            .fill(priority.color)
-                            .frame(width: 3, height: 3)
+                    
+                    // Due date on far right
+                    if let dueDate = todo.dueDate {
+                        HStack(spacing: 2) {
+                            Image(systemName: "calendar")
+                                .font(.system(size: 7, weight: .medium))
+                                .foregroundColor(.white)
+                            Text(relativeDateString(for: dueDate))
+                                .font(.system(size: 8, weight: .medium))
+                                .foregroundColor(.white)
+                                .lineLimit(1)
+                                .fixedSize()
+                        }
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 3)
+                        .background(smartDueDateColor(for: dueDate))
+                        .clipShape(Capsule())
                     }
                 }
             }
@@ -340,6 +280,48 @@ struct TodoRowView: View {
         let formatter = DateFormatter()
         formatter.dateStyle = .short
         return formatter.string(from: date)
+    }
+    
+    private func priorityIcon(for priority: TodoPriority) -> String {
+        switch priority {
+        case .low: return "arrow.down"
+        case .medium: return "minus"
+        case .high: return "arrow.up"
+        case .urgent: return "exclamationmark.triangle.fill"
+        }
+    }
+    
+    // Updated priority colors matching the main app
+    private func updatedPriorityColor(for priority: TodoPriority) -> Color {
+        switch priority {
+        case .low: return Color(red: 0.0, green: 0.6, blue: 0.4) // Green
+        case .medium: return Color(red: 0.8, green: 0.6, blue: 0.2) // Yellow/Gold
+        case .high: return Color(red: 0.8, green: 0.3, blue: 0.3) // Red
+        case .urgent: return Color(red: 0.7, green: 0.2, blue: 0.2) // Dark Red
+        }
+    }
+    
+    // Updated due date color to match high priority red
+    private func updatedDueDateColor(for date: Date) -> Color {
+        return Color(red: 0.8, green: 0.3, blue: 0.3) // Same red as high priority
+    }
+    
+    // Smart due date color based on date status
+    private func smartDueDateColor(for date: Date) -> Color {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let dueDate = calendar.startOfDay(for: date)
+        
+        if dueDate < today {
+            // Overdue - Red
+            return Color(red: 0.8, green: 0.3, blue: 0.3)
+        } else if dueDate == today {
+            // Today - Orange
+            return Color(red: 0.9, green: 0.5, blue: 0.1)
+        } else {
+            // Future - Gray
+            return Color(red: 0.6, green: 0.6, blue: 0.6)
+        }
     }
 }
 

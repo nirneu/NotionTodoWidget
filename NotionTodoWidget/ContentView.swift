@@ -20,6 +20,7 @@ struct ContentView: View {
             }
             .navigationTitle("Todo Widget")
             .navigationBarTitleDisplayMode(.large)
+            .background(Color(.systemBackground))
         }
         .onAppear {
             if notionService.isAuthenticated {
@@ -178,7 +179,7 @@ struct ContentView: View {
                 }
             }
         }
-        .listStyle(.insetGrouped)
+        .listStyle(.plain)
         .sheet(isPresented: $showingFilters) {
             FilterView()
                 .environmentObject(notionService)
@@ -263,46 +264,74 @@ struct TodoRowView: View {
                 }
             }
             
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 8) {
                 Text(todo.title)
-                    .font(.body)
+                    .font(.system(size: 17, weight: .medium))
                     .strikethrough(todo.status.isCompleted)
                     .foregroundColor(todo.status.isCompleted ? .secondary : .primary)
+                    .lineLimit(nil)
                 
-                HStack(spacing: 8) {
-                    Text(todo.status.displayName)
-                        .font(.caption)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(statusColor(for: todo.status))
-                        .foregroundColor(.white)
-                        .clipShape(Capsule())
-                    
-                    if let priority = todo.priority {
-                        Text(priority.displayName)
-                            .font(.caption)
-                            .foregroundColor(priority.color)
+                HStack {
+                    // Status and Priority grouped together on left
+                    HStack(spacing: 8) {
+                        // Status badge
+                        Text(todo.status.displayName)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(statusColor(for: todo.status))
+                            .clipShape(Capsule())
+                        
+                        // Priority next to status
+                        if let priority = todo.priority {
+                            HStack(spacing: 3) {
+                                Image(systemName: priorityIcon(for: priority))
+                                    .font(.system(size: 9, weight: .bold))
+                                    .foregroundColor(.white)
+                                Text(priority.displayName)
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundColor(.white)
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(updatedPriorityColor(for: priority))
+                            .clipShape(Capsule())
+                        }
                     }
                     
                     Spacer()
                     
+                    // Due date on far right
                     if let dueDate = todo.dueDate {
-                        HStack(spacing: 4) {
+                        HStack(spacing: 3) {
                             Image(systemName: "calendar")
-                                .font(.caption2)
+                                .font(.system(size: 9, weight: .medium))
+                                .foregroundColor(.white)
                             Text(dueDateText(for: dueDate))
-                                .font(.caption)
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundColor(.white)
+                                .lineLimit(1)
+                                .fixedSize()
                         }
-                        .foregroundColor(dueDateColor(for: dueDate))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(dueDateColor(for: dueDate).opacity(0.1))
-                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(smartDueDateColor(for: dueDate))
+                        .clipShape(Capsule())
                     }
                 }
             }
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 12)
+        .padding(.horizontal, 16)
+        .background(Color(.systemBackground))
+        .overlay(
+            Rectangle()
+                .frame(height: 0.5)
+                .foregroundColor(Color(.separator))
+                .opacity(0.3),
+            alignment: .bottom
+        )
     }
     
     private func statusColor(for status: TodoStatus) -> Color {
@@ -352,6 +381,48 @@ struct TodoRowView: View {
         case .medium: return .blue
         case .high: return .orange
         case .urgent: return .red
+        }
+    }
+    
+    private func priorityIcon(for priority: TodoPriority) -> String {
+        switch priority {
+        case .low: return "arrow.down"
+        case .medium: return "minus"
+        case .high: return "arrow.up"
+        case .urgent: return "exclamationmark.triangle.fill"
+        }
+    }
+    
+    // Updated priority colors matching the image
+    private func updatedPriorityColor(for priority: TodoPriority) -> Color {
+        switch priority {
+        case .low: return Color(red: 0.0, green: 0.6, blue: 0.4) // Green
+        case .medium: return Color(red: 0.8, green: 0.6, blue: 0.2) // Yellow/Gold
+        case .high: return Color(red: 0.8, green: 0.3, blue: 0.3) // Red
+        case .urgent: return Color(red: 0.7, green: 0.2, blue: 0.2) // Dark Red
+        }
+    }
+    
+    // Updated due date color to match high priority red
+    private func updatedDueDateColor(for date: Date) -> Color {
+        return Color(red: 0.8, green: 0.3, blue: 0.3) // Same red as high priority
+    }
+    
+    // Smart due date color based on date status
+    private func smartDueDateColor(for date: Date) -> Color {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let dueDate = calendar.startOfDay(for: date)
+        
+        if dueDate < today {
+            // Overdue - Red
+            return Color(red: 0.8, green: 0.3, blue: 0.3)
+        } else if dueDate == today {
+            // Today - Orange
+            return Color(red: 0.9, green: 0.5, blue: 0.1)
+        } else {
+            // Future - Gray
+            return Color(red: 0.6, green: 0.6, blue: 0.6)
         }
     }
 }
