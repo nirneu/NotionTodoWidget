@@ -17,8 +17,11 @@ class NotionService: ObservableObject {
     @Published var statusFilter: Set<TodoStatus>
     @Published var priorityFilter: Set<TodoPriority>
     @Published var statusUpdateMessage: String?
+    @Published var databases: [DatabaseConfiguration] = []
+    @Published var activeDatabaseId: String?
+    @Published var widgetDatabaseId: String?
     
-    private var apiKey: String? {
+    var apiKey: String? {
         get {
             UserDefaults.standard.string(forKey: "NotionAPIKey")
         }
@@ -27,13 +30,27 @@ class NotionService: ObservableObject {
         }
     }
     
-    private var databaseId: String? {
+    private var savedDatabases: [DatabaseConfiguration] {
         get {
-            UserDefaults.standard.string(forKey: "NotionDatabaseId")
+            guard let data = UserDefaults.standard.data(forKey: "NotionDatabases"),
+                  let databases = try? JSONDecoder().decode([DatabaseConfiguration].self, from: data) else {
+                return []
+            }
+            return databases
         }
         set {
-            UserDefaults.standard.set(newValue, forKey: "NotionDatabaseId")
+            if let data = try? JSONEncoder().encode(newValue) {
+                UserDefaults.standard.set(data, forKey: "NotionDatabases")
+            }
         }
+    }
+    
+    private var activeDatabase: DatabaseConfiguration? {
+        return databases.first { $0.isActive }
+    }
+    
+    private var currentDatabaseId: String? {
+        return activeDatabase?.databaseId
     }
     
     
@@ -43,6 +60,11 @@ class NotionService: ObservableObject {
         self.statusFilter = PreferencesManager.shared.loadStatusFilter()
         self.priorityFilter = PreferencesManager.shared.loadPriorityFilter()
         
+        // Load saved databases
+        self.databases = savedDatabases
+        self.activeDatabaseId = databases.first { $0.isActive }?.id
+        self.widgetDatabaseId = PreferencesManager.shared.loadWidgetDatabaseId()
+        
         checkAuthenticationStatus()
         // Apply initial filtering and sorting
         applyFiltersAndSorting()
@@ -50,33 +72,399 @@ class NotionService: ObservableObject {
     
     // MARK: - Authentication
     
-    func configure(apiKey: String, databaseId: String) {
+    func configure(apiKey: String) {
         self.apiKey = apiKey
-        self.databaseId = databaseId
         checkAuthenticationStatus()
         
         // If we become authenticated, immediately fetch schema then data
         if isAuthenticated {
             fetchDatabaseSchema()
+            // Also cache data for all databases for widget usage
+            cacheDataForAllDatabases()
         }
     }
     
     private func checkAuthenticationStatus() {
-        isAuthenticated = apiKey != nil && databaseId != nil
+        isAuthenticated = apiKey != nil && !databases.isEmpty && activeDatabase != nil
     }
     
     func signOut() {
         apiKey = nil
-        databaseId = nil
+        databases = []
+        savedDatabases = []
+        activeDatabaseId = nil
         isAuthenticated = false
         todos = []
+        
+        // Clear cached todos from App Groups UserDefaults (used by widget)
+        if let sharedDefaults = UserDefaults(suiteName: "group.com.nirneu.notiontodowidget") {
+            sharedDefaults.removeObject(forKey: "cachedTodos")
+            
+            // Also clear all database-specific cached data
+            for database in databases {
+                let databaseSpecificKey = "cachedTodos_\(database.databaseId)"
+                sharedDefaults.removeObject(forKey: databaseSpecificKey)
+            }
+            print("App: Cleared all cached todos from App Groups")
+        }
+        
+        // Clear cached todos from regular UserDefaults
+        UserDefaults.standard.removeObject(forKey: "cachedTodos")
+        for database in databases {
+            let databaseSpecificKey = "cachedTodos_\(database.databaseId)"
+            UserDefaults.standard.removeObject(forKey: databaseSpecificKey)
+        }
+        print("App: Cleared all cached todos from regular UserDefaults")
+        
+        // Clear debug files from Documents directory
+        if let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+            let schemaFile = documentsPath.appendingPathComponent("notion_schema.json")
+            let todosFile = documentsPath.appendingPathComponent("notion_todos.json")
+            
+            try? FileManager.default.removeItem(at: schemaFile)
+            try? FileManager.default.removeItem(at: todosFile)
+            print("App: Cleared debug files from Documents directory")
+        }
+        
+        // Force widget refresh to clear widget display
+        WidgetCenter.shared.reloadAllTimelines()
+        print("App: Forced widget timeline refresh after sign out")
+    }
+    
+    // MARK: - Database Management
+    
+    func fetchDatabaseInfo(databaseId: String, completion: @escaping (Result<String, Error>) -> Void) {
+        guard let apiKey = apiKey else {
+            completion(.failure(NSError(domain: "NotionService", code: 1, userInfo: [NSLocalizedDescriptionKey: "No API key"])))
+            return
+        }
+        
+        guard let url = URL(string: "https://api.notion.com/v1/databases/\(databaseId)") else {
+            completion(.failure(NSError(domain: "NotionService", code: 2, userInfo: [NSLocalizedDescriptionKey: "Invalid URL"])))
+            return
+        }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("2022-06-28", forHTTPHeaderField: "Notion-Version")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error = error {
+                DispatchQueue.main.async {
+                    completion(.failure(error))
+                }
+                return
+            }
+            
+            guard let data = data else {
+                DispatchQueue.main.async {
+                    completion(.failure(NSError(domain: "NotionService", code: 3, userInfo: [NSLocalizedDescriptionKey: "No data received"])))
+                }
+                return
+            }
+            
+            do {
+                if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let title = json["title"] as? [[String: Any]] {
+                    
+                    // Extract the database name from the title array
+                    var databaseName = "Untitled Database"
+                    if let firstTitle = title.first,
+                       let plainText = firstTitle["plain_text"] as? String,
+                       !plainText.isEmpty {
+                        databaseName = plainText
+                    }
+                    
+                    DispatchQueue.main.async {
+                        completion(.success(databaseName))
+                    }
+                } else {
+                    DispatchQueue.main.async {
+                        completion(.failure(NSError(domain: "NotionService", code: 4, userInfo: [NSLocalizedDescriptionKey: "Invalid response format"])))
+                    }
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    completion(.failure(error))
+                }
+            }
+        }.resume()
+    }
+    
+    func addDatabase(name: String, databaseId: String) {
+        let newDatabase = DatabaseConfiguration(
+            name: name, 
+            databaseId: databaseId, 
+            isActive: databases.isEmpty
+        )
+        databases.append(newDatabase)
+        savedDatabases = databases
+        
+        if databases.count == 1 {
+            activeDatabaseId = newDatabase.id
+        }
+        
+        checkAuthenticationStatus()
+        
+        if isAuthenticated {
+            fetchDatabaseSchema()
+            // Also cache data for all databases for widget usage
+            cacheDataForAllDatabases()
+        }
+    }
+    
+    func removeDatabase(_ database: DatabaseConfiguration) {
+        databases.removeAll { $0.id == database.id }
+        
+        // Clean up cached data for the removed database
+        let databaseSpecificKey = "cachedTodos_\(database.databaseId)"
+        if let sharedDefaults = UserDefaults(suiteName: "group.com.nirneu.notiontodowidget") {
+            sharedDefaults.removeObject(forKey: databaseSpecificKey)
+        }
+        UserDefaults.standard.removeObject(forKey: databaseSpecificKey)
+        print("🗑️ Cleaned up cached data for removed database: \(database.name)")
+        
+        // If we removed the active database, set the first one as active
+        if database.isActive && !databases.isEmpty {
+            databases[0] = DatabaseConfiguration(
+                id: databases[0].id,
+                name: databases[0].name,
+                databaseId: databases[0].databaseId,
+                isActive: true,
+                createdAt: databases[0].createdAt
+            )
+            activeDatabaseId = databases[0].id
+        } else if database.isActive {
+            activeDatabaseId = nil
+        }
+        
+        savedDatabases = databases
+        checkAuthenticationStatus()
+        
+        if isAuthenticated {
+            fetchDatabaseSchema()
+            // Also cache data for all remaining databases for widget usage
+            cacheDataForAllDatabases()
+        }
+    }
+    
+    func updateDatabase(_ database: DatabaseConfiguration, name: String, databaseId: String) {
+        // Clean up old cached data if database ID changed
+        if database.databaseId != databaseId {
+            let oldDatabaseSpecificKey = "cachedTodos_\(database.databaseId)"
+            if let sharedDefaults = UserDefaults(suiteName: "group.com.nirneu.notiontodowidget") {
+                sharedDefaults.removeObject(forKey: oldDatabaseSpecificKey)
+            }
+            UserDefaults.standard.removeObject(forKey: oldDatabaseSpecificKey)
+            print("🗑️ Cleaned up old cached data for database: \(database.name)")
+        }
+        
+        // Update the database in the array
+        if let index = databases.firstIndex(where: { $0.id == database.id }) {
+            databases[index] = DatabaseConfiguration(
+                id: database.id,
+                name: name,
+                databaseId: databaseId,
+                isActive: database.isActive,
+                createdAt: database.createdAt
+            )
+            
+            // Update activeDatabaseId if this was the active database
+            if database.isActive {
+                activeDatabaseId = database.id
+            }
+            
+            savedDatabases = databases
+            print("✏️ Updated database: \(database.name) -> \(name)")
+            
+            // If authenticated and this is the active database, refresh data
+            if isAuthenticated {
+                if database.isActive {
+                    fetchDatabaseSchema()
+                }
+                // Also cache data for all databases for widget usage
+                cacheDataForAllDatabases()
+            }
+        }
+    }
+    
+    func setActiveDatabase(_ database: DatabaseConfiguration) {
+        // Deactivate all databases
+        databases = databases.map { db in
+            DatabaseConfiguration(
+                id: db.id,
+                name: db.name,
+                databaseId: db.databaseId,
+                isActive: db.id == database.id,
+                createdAt: db.createdAt
+            )
+        }
+        
+        activeDatabaseId = database.id
+        savedDatabases = databases
+        
+        // Immediately save current database info for widget access
+        saveCurrentDatabaseInfo()
+        
+        checkAuthenticationStatus()
+        
+        if isAuthenticated {
+            fetchDatabaseSchema()
+            // Also ensure all databases have cached data for widget usage
+            cacheDataForAllDatabases()
+        }
+    }
+    
+    private func saveCurrentDatabaseInfo() {
+        // Save current database info to both App Groups and regular UserDefaults
+        if let currentDb = activeDatabase {
+            // App Groups UserDefaults for widget access
+            if let sharedDefaults = UserDefaults(suiteName: "group.com.nirneu.notiontodowidget") {
+                sharedDefaults.set(currentDb.databaseId, forKey: "currentDatabaseId")
+                sharedDefaults.set(currentDb.name, forKey: "currentDatabaseName")
+                
+                // Also save all databases for widget database selection
+                if let data = try? JSONEncoder().encode(databases) {
+                    sharedDefaults.set(data, forKey: "savedDatabases")
+                }
+                
+                print("App: Saved current database info to App Groups: \(currentDb.name)")
+            }
+            
+            // Regular UserDefaults as fallback
+            UserDefaults.standard.set(currentDb.databaseId, forKey: "currentDatabaseId")
+            UserDefaults.standard.set(currentDb.name, forKey: "currentDatabaseName")
+            
+            // Also save all databases for widget database selection
+            if let data = try? JSONEncoder().encode(databases) {
+                UserDefaults.standard.set(data, forKey: "savedDatabases")
+            }
+            
+            print("App: Saved current database info to regular UserDefaults: \(currentDb.name)")
+        }
+        
+        // Force widget refresh
+        WidgetCenter.shared.reloadAllTimelines()
+        print("App: Forced widget timeline refresh after database change")
+    }
+    
+    func setWidgetDatabase(_ database: DatabaseConfiguration?) {
+        widgetDatabaseId = database?.databaseId
+        PreferencesManager.shared.saveWidgetDatabaseId(database?.databaseId)
+        
+        // Force widget refresh to reflect the change
+        WidgetCenter.shared.reloadAllTimelines()
+        print("App: Widget database changed to: \(database?.name ?? "none"), forced widget refresh")
     }
     
     // MARK: - Data Operations
     
+    func fetchAndCacheDataForDatabase(_ databaseId: String) {
+        guard let apiKey = apiKey else {
+            print("❌ No API key available for fetching database data")
+            return
+        }
+        
+        print("🔄 Fetching data for database: \(databaseId)")
+        
+        let url = URL(string: "https://api.notion.com/v1/databases/\(databaseId)/query")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("2022-06-28", forHTTPHeaderField: "Notion-Version")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        let requestBody = [
+            "sorts": [
+                [
+                    "timestamp": "created_time",
+                    "direction": "descending"
+                ]
+            ]
+        ]
+        
+        do {
+            request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
+        } catch {
+            print("❌ Failed to create request: \(error.localizedDescription)")
+            return
+        }
+        
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error = error {
+                print("❌ Network error fetching database data: \(error.localizedDescription)")
+                return
+            }
+            
+            guard let data = data else {
+                print("❌ No data received for database")
+                return
+            }
+            
+            if let httpResponse = response as? HTTPURLResponse {
+                if httpResponse.statusCode != 200 {
+                    print("❌ HTTP error fetching database data: \(httpResponse.statusCode)")
+                    return
+                }
+            }
+            
+            do {
+                let fetchedTodos = try self.parseNotionResponse(data)
+                
+                // Apply current user's filters and sorting to the fetched data
+                let filteredAndSortedTodos = self.applyFiltersAndSorting(to: fetchedTodos)
+                
+                // Cache the filtered and sorted data with database-specific key
+                if let encodedData = try? JSONEncoder().encode(filteredAndSortedTodos) {
+                    let databaseSpecificKey = "cachedTodos_\(databaseId)"
+                    
+                    // Save to App Groups
+                    if let sharedDefaults = UserDefaults(suiteName: "group.com.nirneu.notiontodowidget") {
+                        sharedDefaults.set(encodedData, forKey: databaseSpecificKey)
+                        print("✅ Cached \(filteredAndSortedTodos.count) filtered/sorted todos for database \(databaseId) in App Groups (from \(fetchedTodos.count) raw todos)")
+                    }
+                    
+                    // Save to regular UserDefaults as fallback
+                    UserDefaults.standard.set(encodedData, forKey: databaseSpecificKey)
+                    print("✅ Cached \(filteredAndSortedTodos.count) filtered/sorted todos for database \(databaseId) in UserDefaults")
+                    
+                    // Trigger widget refresh
+                    DispatchQueue.main.async {
+                        WidgetCenter.shared.reloadAllTimelines()
+                        print("🔄 Triggered widget refresh for database change")
+                    }
+                }
+            } catch {
+                print("❌ Failed to parse database response: \(error.localizedDescription)")
+            }
+        }.resume()
+    }
+    
+    func cacheDataForAllDatabases() {
+        print("🔄 Caching data for all configured databases...")
+        for database in databases {
+            // Don't fetch for the active database since it's already being fetched
+            if database.id != activeDatabaseId {
+                print("🔄 Fetching data for database: \(database.name)")
+                fetchAndCacheDataForDatabase(database.databaseId)
+            }
+        }
+    }
+    
+    // Method to refresh cached data for all databases with current filter/sort preferences
+    private func refreshCachedDataForAllDatabases() {
+        print("🔄 Refreshing cached data for all databases with current preferences...")
+        for database in databases {
+            print("🔄 Re-fetching data for database: \(database.name)")
+            fetchAndCacheDataForDatabase(database.databaseId)
+        }
+    }
+    
     func fetchDatabaseSchema() {
-        guard let apiKey = apiKey, let databaseId = databaseId else {
-            errorMessage = "API key or database ID not configured"
+        guard let apiKey = apiKey, let databaseId = currentDatabaseId else {
+            errorMessage = "API key or active database not configured"
             return
         }
         
@@ -157,7 +545,7 @@ class NotionService: ObservableObject {
     }
     
     func fetchTodos() {
-        guard let apiKey = apiKey, let databaseId = databaseId else {
+        guard let apiKey = apiKey, let databaseId = currentDatabaseId else {
             errorMessage = "API key or database ID not configured"
             return
         }
@@ -487,14 +875,31 @@ class NotionService: ObservableObject {
         if let data = try? JSONEncoder().encode(todos) {
             // Primary storage: App Groups (this is what the widget should read)
             if let sharedDefaults = UserDefaults(suiteName: "group.com.nirneu.notiontodowidget") {
+                // Save to general cache for backward compatibility
                 sharedDefaults.set(data, forKey: "cachedTodos")
-                print("App: Saved \(todos.count) todos to App Groups")
+                
+                // Save to database-specific cache for widget configuration support
+                if let currentDb = activeDatabase {
+                    let databaseSpecificKey = "cachedTodos_\(currentDb.databaseId)"
+                    sharedDefaults.set(data, forKey: databaseSpecificKey)
+                    sharedDefaults.set(currentDb.databaseId, forKey: "currentDatabaseId")
+                    sharedDefaults.set(currentDb.name, forKey: "currentDatabaseName")
+                    print("App: Saved \(todos.count) todos to App Groups with key: \(databaseSpecificKey)")
+                }
+                
+                print("App: Saved \(todos.count) todos to App Groups from \(activeDatabase?.name ?? "unknown") database")
             } else {
                 print("App: Failed to access App Groups UserDefaults")
             }
             
             // Fallback storage: Regular UserDefaults
             UserDefaults.standard.set(data, forKey: "cachedTodos")
+            if let currentDb = activeDatabase {
+                let databaseSpecificKey = "cachedTodos_\(currentDb.databaseId)"
+                UserDefaults.standard.set(data, forKey: databaseSpecificKey)
+                UserDefaults.standard.set(currentDb.databaseId, forKey: "currentDatabaseId")
+                UserDefaults.standard.set(currentDb.name, forKey: "currentDatabaseName")
+            }
             print("App: Saved \(todos.count) todos to regular UserDefaults")
         }
     }
@@ -518,10 +923,76 @@ class NotionService: ObservableObject {
         }
         
         // Update in Notion asynchronously
-        updateNotionTaskStatus(pageId: todo.id, status: status)
+        updateNotionTask(pageId: todo.id, status: status, priority: todo.priority)
     }
     
-    private func updateNotionTaskStatus(pageId: String, status: TodoStatus) {
+    func updateTodoPriority(_ todo: TodoItem, priority: TodoPriority) {
+        // Update local copy immediately for responsive UI
+        if let index = todos.firstIndex(where: { $0.id == todo.id }) {
+            let updatedTodo = TodoItem(
+                id: todo.id,
+                title: todo.title,
+                status: todo.status,
+                dueDate: todo.dueDate,
+                priority: priority,
+                createdAt: todo.createdAt,
+                updatedAt: Date()
+            )
+            todos[index] = updatedTodo
+            applyFiltersAndSorting()
+            saveTodosToSharedCache(filteredTodos)
+            WidgetCenter.shared.reloadAllTimelines()
+        }
+        
+        // Update in Notion asynchronously
+        updateNotionTask(pageId: todo.id, status: todo.status, priority: priority)
+    }
+    
+    func updateTodoDueDate(_ todo: TodoItem, dueDate: Date?) {
+        // Update local copy immediately for responsive UI
+        if let index = todos.firstIndex(where: { $0.id == todo.id }) {
+            let updatedTodo = TodoItem(
+                id: todo.id,
+                title: todo.title,
+                status: todo.status,
+                dueDate: dueDate,
+                priority: todo.priority,
+                createdAt: todo.createdAt,
+                updatedAt: Date()
+            )
+            todos[index] = updatedTodo
+            applyFiltersAndSorting()
+            saveTodosToSharedCache(filteredTodos)
+            WidgetCenter.shared.reloadAllTimelines()
+        }
+        
+        // Update in Notion asynchronously
+        updateNotionTaskDueDate(pageId: todo.id, dueDate: dueDate)
+    }
+    
+    func updateTodoTitle(_ todo: TodoItem, title: String) {
+        // Update local copy immediately for responsive UI
+        if let index = todos.firstIndex(where: { $0.id == todo.id }) {
+            let updatedTodo = TodoItem(
+                id: todo.id,
+                title: title,
+                status: todo.status,
+                dueDate: todo.dueDate,
+                priority: todo.priority,
+                createdAt: todo.createdAt,
+                updatedAt: Date()
+            )
+            todos[index] = updatedTodo
+            applyFiltersAndSorting()
+            saveTodosToSharedCache(filteredTodos)
+            WidgetCenter.shared.reloadAllTimelines()
+        }
+        
+        // Update in Notion asynchronously
+        updateNotionTaskTitle(pageId: todo.id, title: title)
+    }
+    
+    private func updateNotionTask(pageId: String, status: TodoStatus, priority: TodoPriority?) {
         guard let apiKey = apiKey else {
             print("❌ No API key available for updating task")
             return
@@ -538,15 +1009,26 @@ class NotionService: ObservableObject {
         request.setValue("2022-06-28", forHTTPHeaderField: "Notion-Version")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
-        // Use the actual property name from your database
-        let updateBody: [String: Any] = [
-            "properties": [
-                "Status": [
-                    "status": [
-                        "name": status.rawValue
-                    ]
+        // Build properties to update
+        var properties: [String: Any] = [
+            "Status": [
+                "status": [
+                    "name": status.rawValue
                 ]
             ]
+        ]
+        
+        // Add priority if provided
+        if let priority = priority {
+            properties["Priority"] = [
+                "select": [
+                    "name": priority.rawValue
+                ]
+            ]
+        }
+        
+        let updateBody: [String: Any] = [
+            "properties": properties
         ]
         
         do {
@@ -591,18 +1073,176 @@ class NotionService: ObservableObject {
         }.resume()
     }
     
+    private func updateNotionTaskDueDate(pageId: String, dueDate: Date?) {
+        guard let apiKey = apiKey else {
+            print("❌ No API key available for updating task")
+            return
+        }
+        
+        guard let url = URL(string: "https://api.notion.com/v1/pages/\(pageId)") else {
+            print("❌ Invalid URL for page update")
+            return
+        }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "PATCH"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("2022-06-28", forHTTPHeaderField: "Notion-Version")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        // Build due date property
+        let dueDateProperty: Any
+        if let dueDate = dueDate {
+            let formatter = DateFormatter()
+            formatter.dateFormat = "yyyy-MM-dd"
+            dueDateProperty = [
+                "date": [
+                    "start": formatter.string(from: dueDate)
+                ]
+            ]
+        } else {
+            dueDateProperty = NSNull()
+        }
+        
+        let updateBody: [String: Any] = [
+            "properties": [
+                "Due date": dueDateProperty
+            ]
+        ]
+        
+        do {
+            request.httpBody = try JSONSerialization.data(withJSONObject: updateBody)
+        } catch {
+            print("❌ Failed to serialize due date update request: \(error)")
+            return
+        }
+        
+        print("🔄 Updating task \(pageId) due date to: \(dueDate?.description ?? "nil")")
+        
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            DispatchQueue.main.async {
+                if let error = error {
+                    print("❌ Network error updating due date: \(error.localizedDescription)")
+                    self.errorMessage = "Failed to update due date: \(error.localizedDescription)"
+                    return
+                }
+                
+                if let httpResponse = response as? HTTPURLResponse {
+                    if httpResponse.statusCode == 200 {
+                        print("✅ Successfully updated due date for task \(pageId)")
+                        self.statusUpdateMessage = "Due date updated"
+                        
+                        // Clear message after 3 seconds
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                            self.statusUpdateMessage = nil
+                        }
+                    } else {
+                        print("❌ Failed to update due date. Status code: \(httpResponse.statusCode)")
+                        if let data = data,
+                           let errorResponse = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                           let message = errorResponse["message"] as? String {
+                            print("❌ Notion API error: \(message)")
+                            self.errorMessage = "Failed to update due date: \(message)"
+                        } else {
+                            self.errorMessage = "Failed to update due date: HTTP \(httpResponse.statusCode)"
+                        }
+                    }
+                }
+            }
+        }.resume()
+    }
+    
+    private func updateNotionTaskTitle(pageId: String, title: String) {
+        guard let apiKey = apiKey else {
+            print("❌ No API key available for updating task")
+            return
+        }
+        
+        guard let url = URL(string: "https://api.notion.com/v1/pages/\(pageId)") else {
+            print("❌ Invalid URL for page update")
+            return
+        }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "PATCH"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("2022-06-28", forHTTPHeaderField: "Notion-Version")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        // Build title property - try different possible title property names
+        let updateBody: [String: Any] = [
+            "properties": [
+                "Task name": [
+                    "title": [
+                        [
+                            "text": [
+                                "content": title
+                            ]
+                        ]
+                    ]
+                ]
+            ]
+        ]
+        
+        do {
+            request.httpBody = try JSONSerialization.data(withJSONObject: updateBody)
+        } catch {
+            print("❌ Failed to serialize title update request: \(error)")
+            return
+        }
+        
+        print("🔄 Updating task \(pageId) title to: '\(title)'")
+        
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            DispatchQueue.main.async {
+                if let error = error {
+                    print("❌ Network error updating title: \(error.localizedDescription)")
+                    self.errorMessage = "Failed to update title: \(error.localizedDescription)"
+                    return
+                }
+                
+                if let httpResponse = response as? HTTPURLResponse {
+                    if httpResponse.statusCode == 200 {
+                        print("✅ Successfully updated title for task \(pageId)")
+                        self.statusUpdateMessage = "Title updated"
+                        
+                        // Clear message after 3 seconds
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                            self.statusUpdateMessage = nil
+                        }
+                    } else {
+                        print("❌ Failed to update title. Status code: \(httpResponse.statusCode)")
+                        if let data = data,
+                           let errorResponse = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                           let message = errorResponse["message"] as? String {
+                            print("❌ Notion API error: \(message)")
+                            self.errorMessage = "Failed to update title: \(message)"
+                        } else {
+                            self.errorMessage = "Failed to update title: HTTP \(httpResponse.statusCode)"
+                        }
+                    }
+                }
+            }
+        }.resume()
+    }
+    
     // MARK: - Filtering and Sorting
     
     func applyFiltersAndSorting() {
+        filteredTodos = applyFiltersAndSorting(to: todos)
+    }
+    
+    // Generic method to apply current filters and sorting to any todo array
+    func applyFiltersAndSorting(to todos: [TodoItem]) -> [TodoItem] {
         // First apply filters
-        filteredTodos = todos.filter { todo in
+        var filtered = todos.filter { todo in
             let statusMatch = statusFilter.contains(todo.status)
             let priorityMatch = todo.priority == nil || priorityFilter.contains(todo.priority!)
             return statusMatch && priorityMatch
         }
         
         // Then apply sorting
-        filteredTodos.sort { todo1, todo2 in
+        filtered.sort { todo1, todo2 in
             // Primary sort
             let primaryResult = compareTodos(todo1, todo2, by: sortConfiguration.primary)
             
@@ -620,6 +1260,8 @@ class NotionService: ObservableObject {
             
             return false
         }
+        
+        return filtered
     }
     
     private func compareTodos(_ todo1: TodoItem, _ todo2: TodoItem, by option: SortOption) -> ComparisonResult {
@@ -657,6 +1299,8 @@ class NotionService: ObservableObject {
         applyFiltersAndSorting()
         // Update widget with new filtered data
         saveTodosToSharedCache(filteredTodos)
+        // Also refresh cached data for all databases with new filter preferences
+        refreshCachedDataForAllDatabases()
         WidgetCenter.shared.reloadAllTimelines()
     }
     
@@ -670,6 +1314,8 @@ class NotionService: ObservableObject {
         applyFiltersAndSorting()
         // Update widget with new filtered data
         saveTodosToSharedCache(filteredTodos)
+        // Also refresh cached data for all databases with new filter preferences
+        refreshCachedDataForAllDatabases()
         WidgetCenter.shared.reloadAllTimelines()
     }
     
@@ -681,6 +1327,8 @@ class NotionService: ObservableObject {
         applyFiltersAndSorting()
         // Update widget with new filtered data
         saveTodosToSharedCache(filteredTodos)
+        // Also refresh cached data for all databases with new filter preferences
+        refreshCachedDataForAllDatabases()
         WidgetCenter.shared.reloadAllTimelines()
     }
     
@@ -690,6 +1338,8 @@ class NotionService: ObservableObject {
         applyFiltersAndSorting()
         // Update widget with new sorted data
         saveTodosToSharedCache(filteredTodos)
+        // Also refresh cached data for all databases with new sort preferences
+        refreshCachedDataForAllDatabases()
         WidgetCenter.shared.reloadAllTimelines()
     }
     
@@ -704,6 +1354,8 @@ class NotionService: ObservableObject {
         applyFiltersAndSorting()
         // Update widget with new sorted data
         saveTodosToSharedCache(filteredTodos)
+        // Also refresh cached data for all databases with new sort preferences
+        refreshCachedDataForAllDatabases()
         WidgetCenter.shared.reloadAllTimelines()
     }
     
@@ -718,6 +1370,8 @@ class NotionService: ObservableObject {
         applyFiltersAndSorting()
         // Update widget with new sorted data
         saveTodosToSharedCache(filteredTodos)
+        // Also refresh cached data for all databases with new sort preferences
+        refreshCachedDataForAllDatabases()
         WidgetCenter.shared.reloadAllTimelines()
     }
     

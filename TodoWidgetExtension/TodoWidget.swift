@@ -1,19 +1,180 @@
 import WidgetKit
 import SwiftUI
+import AppIntents
+
+// MARK: - App Intent Configuration
+
+struct EditTodoIntent: AppIntent {
+    static var title: LocalizedStringResource = "Edit Todo"
+    static var description = IntentDescription("Edit a todo item")
+    
+    @Parameter(title: "Todo ID")
+    var todoId: String
+    
+    @Parameter(title: "Database ID")
+    var databaseId: String?
+    
+    init() {
+        self.todoId = ""
+        self.databaseId = nil
+    }
+    
+    init(todoId: String, databaseId: String? = nil) {
+        self.todoId = todoId
+        self.databaseId = databaseId
+    }
+    
+    func perform() async throws -> some IntentResult & OpensIntent {
+        // Build URL with database information if available
+        var urlString = "notiontodowidget://edit/\(todoId)"
+        if let databaseId = databaseId {
+            urlString += "?database=\(databaseId)"
+        }
+        
+        let url = URL(string: urlString)!
+        print("🎯 Widget Intent: Opening URL: \(url)")
+        return .result(opensIntent: OpenURLIntent(url))
+    }
+}
+
+struct DatabaseSelectionIntent: WidgetConfigurationIntent {
+    static var title: LocalizedStringResource = "Select Database"
+    static var description = IntentDescription("Choose which database to display in the widget")
+    
+    @Parameter(title: "Database", default: nil)
+    var database: DatabaseEntity?
+    
+    init() {
+        // Set default database for new widgets
+        if let defaultDatabase = DatabaseEntity.createDefault() {
+            self.database = defaultDatabase
+            print("🔧 Widget Init: Setting default database to: \(defaultDatabase.name)")
+        } else {
+            print("🔧 Widget Init: No default database available")
+        }
+    }
+    
+    init(database: DatabaseEntity) {
+        self.database = database
+        print("🔧 Widget Init: Creating DatabaseSelectionIntent with database: \(database.name)")
+    }
+    
+    func perform() async throws -> some IntentResult {
+        print("Widget: Database selection changed to: \(database?.name ?? "none")")
+        
+        // If a specific database is selected, fetch its data
+        if let selectedDatabase = database {
+            print("Widget: Requesting data fetch for database: \(selectedDatabase.databaseId)")
+            
+            // Trigger data fetch for the selected database
+            let notionService = NotionService.shared
+            notionService.fetchAndCacheDataForDatabase(selectedDatabase.databaseId)
+        }
+        
+        // Trigger widget timeline refresh
+        WidgetCenter.shared.reloadAllTimelines()
+        print("Widget: Triggered timeline refresh for database selection change")
+        return .result()
+    }
+}
+
+struct DatabaseEntity: AppEntity {
+    let id: String
+    let name: String
+    let databaseId: String
+    
+    static var typeDisplayRepresentation: TypeDisplayRepresentation = "Database"
+    
+    var displayRepresentation: DisplayRepresentation {
+        DisplayRepresentation(title: "\(name)")
+    }
+    
+    static var defaultQuery = DatabaseEntityQuery()
+    
+    // Create a default database entity from the current active database
+    static func createDefault() -> DatabaseEntity? {
+        return DatabaseEntityQuery().getCurrentActiveDatabaseSync()
+    }
+}
+
+struct DatabaseEntityQuery: EntityQuery {
+    func entities(for identifiers: [DatabaseEntity.ID]) async throws -> [DatabaseEntity] {
+        let databases = loadSavedDatabases()
+        return databases.filter { identifiers.contains($0.id) }
+    }
+    
+    func suggestedEntities() async throws -> [DatabaseEntity] {
+        return loadSavedDatabases()
+    }
+    
+    func defaultResult() async -> DatabaseEntity? {
+        // Return the currently active database as the default for new widgets
+        let result = getCurrentActiveDatabase()
+        print("🔧 Widget Default Result: Returning default database: \(result?.name ?? "nil")")
+        return result
+    }
+    
+    private func loadSavedDatabases() -> [DatabaseEntity] {
+        // Try App Groups first
+        if let sharedDefaults = UserDefaults(suiteName: "group.com.nirneu.notiontodowidget"),
+           let data = sharedDefaults.data(forKey: "savedDatabases"),
+           let configurations = try? JSONDecoder().decode([DatabaseConfiguration].self, from: data) {
+            return configurations.map { DatabaseEntity(id: $0.id, name: $0.name, databaseId: $0.databaseId) }
+        }
+        
+        // Fallback to regular UserDefaults
+        if let data = UserDefaults.standard.data(forKey: "savedDatabases"),
+           let configurations = try? JSONDecoder().decode([DatabaseConfiguration].self, from: data) {
+            return configurations.map { DatabaseEntity(id: $0.id, name: $0.name, databaseId: $0.databaseId) }
+        }
+        
+        return []
+    }
+    
+    func getCurrentActiveDatabaseSync() -> DatabaseEntity? {
+        let result = getCurrentActiveDatabase()
+        print("🔧 Widget Default Sync: Found active database: \(result?.name ?? "nil")")
+        return result
+    }
+    
+    private func getCurrentActiveDatabase() -> DatabaseEntity? {
+        // Get current active database ID
+        let currentDatabaseId: String?
+        
+        // Try App Groups first
+        if let sharedDefaults = UserDefaults(suiteName: "group.com.nirneu.notiontodowidget") {
+            currentDatabaseId = sharedDefaults.string(forKey: "currentDatabaseId")
+        } else {
+            // Fallback to regular UserDefaults
+            currentDatabaseId = UserDefaults.standard.string(forKey: "currentDatabaseId")
+        }
+        
+        guard let activeDbId = currentDatabaseId else {
+            print("🔍 Widget Default: No active database ID found")
+            return nil
+        }
+        
+        // Find the database configuration with this ID
+        let allDatabases = loadSavedDatabases()
+        if let activeDatabase = allDatabases.first(where: { $0.databaseId == activeDbId }) {
+            print("✅ Widget Default: Setting default to active database: \(activeDatabase.name)")
+            return activeDatabase
+        } else {
+            print("❌ Widget Default: Active database ID not found in saved databases")
+            return nil
+        }
+    }
+}
+
+// DatabaseConfiguration is defined in the main app's TodoItem.swift
 
 struct TodoWidget: Widget {
     let kind: String = "TodoWidget"
     
     var body: some WidgetConfiguration {
-        StaticConfiguration(kind: kind, provider: TodoTimelineProvider()) { entry in
-            if #available(iOSApplicationExtension 17.0, *) {
-                TodoWidgetEntryView(entry: entry)
-                    .containerBackground(.fill.tertiary, for: .widget)
-            } else {
-                TodoWidgetEntryView(entry: entry)
-                    .padding()
-                    .background(Color(.systemGray6))
-            }
+        AppIntentConfiguration(kind: kind, intent: DatabaseSelectionIntent.self, provider: TodoAppIntentTimelineProvider()) { entry in
+            TodoWidgetEntryView(entry: entry)
+                .containerBackground(.fill.tertiary, for: .widget)
         }
         .configurationDisplayName("Todo Widget")
         .description("Stay on top of your tasks with this elegant todo widget.")
@@ -24,111 +185,176 @@ struct TodoWidget: Widget {
 struct TodoEntry: TimelineEntry {
     let date: Date
     let todos: [TodoItem]
+    let currentDatabaseName: String?
+    let configuration: DatabaseSelectionIntent
 }
 
-struct TodoTimelineProvider: TimelineProvider {
-    func placeholder(in context: Context) -> TodoEntry {
-        TodoEntry(date: Date(), todos: Array(TodoItem.sampleData.prefix(3)))
+// MARK: - Timeline Provider
+
+struct TodoAppIntentTimelineProvider: AppIntentTimelineProvider {
+    typealias Entry = TodoEntry
+    typealias Intent = DatabaseSelectionIntent
+    
+    func placeholder(in context: TimelineProviderContext) -> TodoEntry {
+        let defaultIntent = DatabaseSelectionIntent()
+        return TodoEntry(date: Date(), todos: Array(TodoItem.sampleData.prefix(3)), currentDatabaseName: "Sample Database", configuration: defaultIntent)
     }
     
-    func getSnapshot(in context: Context, completion: @escaping (TodoEntry) -> Void) {
-        // For snapshot, use cached data or sample data
-        let todos = getCachedTodos()
-        let entry = TodoEntry(date: Date(), todos: Array(todos.prefix(3)))
-        completion(entry)
+    func snapshot(for configuration: DatabaseSelectionIntent, in context: TimelineProviderContext) async -> TodoEntry {
+        let (todos, databaseName) = getCachedTodosWithDatabase(for: configuration)
+        return TodoEntry(date: Date(), todos: Array(todos.prefix(3)), currentDatabaseName: databaseName, configuration: configuration)
     }
     
-    func getTimeline(in context: Context, completion: @escaping (Timeline<TodoEntry>) -> Void) {
+    func timeline(for configuration: DatabaseSelectionIntent, in context: TimelineProviderContext) async -> Timeline<TodoEntry> {
         let currentDate = Date()
         
-        // Always try to get cached data first, regardless of authentication state
-        let cachedTodos = getCachedTodos()
+        print("=== Widget Timeline Debug ===")
+        print("Configuration database name: \(configuration.database?.name ?? "None")")
+        print("Configuration database ID: \(configuration.database?.databaseId ?? "None")")
         
-        if !cachedTodos.isEmpty {
+        // Check authentication first to understand the state
+        let notionService = NotionService.shared
+        print("Is authenticated: \(notionService.isAuthenticated)")
+        
+        // Get cached data based on configuration
+        let cachedResult = getCachedTodosWithDatabase(for: configuration)
+        
+        if !cachedResult.todos.isEmpty {
             // We have cached data, use it
-            let todos = Array(cachedTodos.prefix(3))
-            let entry = TodoEntry(date: currentDate, todos: todos)
+            let todos = Array(cachedResult.todos.prefix(3))
+            let entry = TodoEntry(date: currentDate, todos: todos, currentDatabaseName: cachedResult.databaseName, configuration: configuration)
             
             let nextUpdate = Calendar.current.date(byAdding: .minute, value: 5, to: currentDate)!
             let timeline = Timeline(entries: [entry], policy: .after(nextUpdate))
             
-            print("Widget: Using cached data with \(todos.count) todos")
-            completion(timeline)
+            print("✅ Using cached data with \(todos.count) todos for database: \(cachedResult.databaseName ?? "Unknown")")
+            return timeline
         } else {
-            // No cached data available, check authentication
-            let notionService = NotionService.shared
+            print("❌ No cached data found")
             
             if notionService.isAuthenticated {
-                // Authenticated but no cached data - show empty state
-                let entry = TodoEntry(date: currentDate, todos: [])
+                // Authenticated but no cached data - show empty state with message to user
+                let entry = TodoEntry(date: currentDate, todos: [], currentDatabaseName: cachedResult.databaseName ?? "No Data", configuration: configuration)
                 
                 let nextUpdate = Calendar.current.date(byAdding: .minute, value: 2, to: currentDate)!
                 let timeline = Timeline(entries: [entry], policy: .after(nextUpdate))
                 
-                print("Widget: Authenticated but no cached data, showing empty state")
-                completion(timeline)
+                print("🔐 Authenticated but no cached data for \(cachedResult.databaseName ?? "Unknown"), showing empty state")
+                return timeline
             } else {
-                // Not authenticated, use sample data
-                let entry = TodoEntry(date: currentDate, todos: Array(TodoItem.sampleData.prefix(3)))
+                // Not authenticated - show demo data with clear indication
+                let entry = TodoEntry(date: currentDate, todos: Array(TodoItem.sampleData.prefix(3)), currentDatabaseName: "Demo - Login Required", configuration: configuration)
                 
                 let nextUpdate = Calendar.current.date(byAdding: .minute, value: 15, to: currentDate)!
                 let timeline = Timeline(entries: [entry], policy: .after(nextUpdate))
                 
-                print("Widget: Not authenticated, using sample data")
-                completion(timeline)
+                print("🚫 Not authenticated, using sample data")
+                return timeline
             }
         }
     }
     
-    private func getCachedTodos() -> [TodoItem] {
-        // Load todos from cache - the main app already applies filters and sorting before saving
-        var todos: [TodoItem] = []
+    private func getCachedTodosWithDatabase(for configuration: DatabaseSelectionIntent) -> (todos: [TodoItem], databaseName: String?) {
+        print("🔍 Widget: Starting data search...")
+        print("🔍 Configuration database: \(configuration.database?.name ?? "nil")")
+        print("🔍 Configuration database ID: \(configuration.database?.databaseId ?? "nil")")
         
-        // Try App Groups first - this is the primary shared storage
-        print("Widget: Attempting to load from App Groups...")
+        // PRIORITY 1: If specific database is configured in widget, use ONLY that
+        if let configuredDatabase = configuration.database {
+            let databaseKey = "cachedTodos_\(configuredDatabase.databaseId)"
+            print("🎯 Widget configured for specific database: \(configuredDatabase.name)")
+            print("🔍 Looking for key: \(databaseKey)")
+            
+            // Try App Groups first
+            if let sharedDefaults = UserDefaults(suiteName: "group.com.nirneu.notiontodowidget"),
+               let data = sharedDefaults.data(forKey: databaseKey),
+               let cachedTodos = try? JSONDecoder().decode([TodoItem].self, from: data) {
+                print("✅ Found \(cachedTodos.count) todos for configured database: \(configuredDatabase.name) (App Groups)")
+                return (todos: cachedTodos, databaseName: configuredDatabase.name)
+            }
+            
+            // Try regular UserDefaults as fallback
+            if let data = UserDefaults.standard.data(forKey: databaseKey),
+               let cachedTodos = try? JSONDecoder().decode([TodoItem].self, from: data) {
+                print("✅ Found \(cachedTodos.count) todos for configured database: \(configuredDatabase.name) (UserDefaults)")
+                return (todos: cachedTodos, databaseName: configuredDatabase.name)
+            }
+            
+            print("❌ No data found for configured database: \(configuredDatabase.name)")
+            print("💡 Widget will show empty state until data is fetched")
+            return (todos: [], databaseName: configuredDatabase.name)
+        }
+        
+        // PRIORITY 2: No specific database configured, use current active database
+        print("🔍 No specific database configured (fallback), trying current active database...")
+        
         if let sharedDefaults = UserDefaults(suiteName: "group.com.nirneu.notiontodowidget") {
-            print("Widget: Successfully created shared UserDefaults")
-            if let data = sharedDefaults.data(forKey: "cachedTodos") {
-                print("Widget: Found cached data (\(data.count) bytes)")
-                if let cachedTodos = try? JSONDecoder().decode([TodoItem].self, from: data), !cachedTodos.isEmpty {
-                    print("Widget: Successfully decoded \(cachedTodos.count) todos from App Groups")
-                    print("Widget: First todo: '\(cachedTodos.first?.title ?? "unknown")'")
-                    todos = cachedTodos
-                } else {
-                    print("Widget: Failed to decode todos from App Groups data")
+            if let currentDatabaseId = getCurrentDatabaseId() {
+                let databaseKey = "cachedTodos_\(currentDatabaseId)"
+                print("🔍 Trying current database key: \(databaseKey)")
+                
+                if let data = sharedDefaults.data(forKey: databaseKey),
+                   let cachedTodos = try? JSONDecoder().decode([TodoItem].self, from: data) {
+                    let databaseName = getDatabaseName(for: currentDatabaseId) ?? "Current Database"
+                    print("✅ Found \(cachedTodos.count) todos for current database: \(databaseName)")
+                    return (todos: cachedTodos, databaseName: databaseName)
                 }
-            } else {
-                print("Widget: No data found in App Groups for key 'cachedTodos'")
             }
-        } else {
-            print("Widget: Failed to create shared UserDefaults with suite name")
-        }
-        
-        // If App Groups failed, try regular UserDefaults as fallback
-        if todos.isEmpty {
-            print("Widget: Trying regular UserDefaults as fallback...")
-            if let data = UserDefaults.standard.data(forKey: "cachedTodos") {
-                print("Widget: Found fallback data (\(data.count) bytes)")
-                if let cachedTodos = try? JSONDecoder().decode([TodoItem].self, from: data), !cachedTodos.isEmpty {
-                    print("Widget: Successfully loaded \(cachedTodos.count) todos from regular UserDefaults")
-                    todos = cachedTodos
-                } else {
-                    print("Widget: Failed to decode todos from regular UserDefaults")
-                }
-            } else {
-                print("Widget: No fallback data found in regular UserDefaults")
+            
+            // Fallback to general cached todos
+            print("🔍 Trying general cached todos")
+            if let data = sharedDefaults.data(forKey: "cachedTodos"),
+               let cachedTodos = try? JSONDecoder().decode([TodoItem].self, from: data) {
+                let databaseName = getCurrentDatabaseId().flatMap { getDatabaseName(for: $0) } ?? "Latest Data"
+                print("✅ Found \(cachedTodos.count) general cached todos")
+                return (todos: cachedTodos, databaseName: databaseName)
             }
         }
         
-        if todos.isEmpty {
-            print("Widget: No cached todos found anywhere, returning empty array")
-            return []
+        // PRIORITY 3: Try regular UserDefaults as final fallback
+        print("🔍 Trying regular UserDefaults as final fallback...")
+        if let data = UserDefaults.standard.data(forKey: "cachedTodos"),
+           let cachedTodos = try? JSONDecoder().decode([TodoItem].self, from: data) {
+            print("✅ Found \(cachedTodos.count) general todos in UserDefaults")
+            return (todos: cachedTodos, databaseName: "Available Data")
         }
         
-        print("Widget: Returning \(todos.count) todos (already filtered and sorted by main app)")
-        return todos
+        print("❌ No cached data found anywhere")
+        return (todos: [], databaseName: nil)
     }
     
+    private func getCurrentDatabaseId() -> String? {
+        // Try App Groups first
+        if let sharedDefaults = UserDefaults(suiteName: "group.com.nirneu.notiontodowidget") {
+            return sharedDefaults.string(forKey: "currentDatabaseId")
+        }
+        
+        // Fallback to regular UserDefaults
+        return UserDefaults.standard.string(forKey: "currentDatabaseId")
+    }
+    
+    private func getDatabaseName(for databaseId: String?) -> String? {
+        guard let databaseId = databaseId else { return nil }
+        
+        // Try App Groups first
+        if let sharedDefaults = UserDefaults(suiteName: "group.com.nirneu.notiontodowidget"),
+           let data = sharedDefaults.data(forKey: "savedDatabases"),
+           let databases = try? JSONDecoder().decode([DatabaseConfiguration].self, from: data) {
+            if let database = databases.first(where: { $0.databaseId == databaseId }) {
+                return database.name
+            }
+        }
+        
+        // Fallback to regular UserDefaults
+        if let data = UserDefaults.standard.data(forKey: "savedDatabases"),
+           let databases = try? JSONDecoder().decode([DatabaseConfiguration].self, from: data) {
+            if let database = databases.first(where: { $0.databaseId == databaseId }) {
+                return database.name
+            }
+        }
+        
+        return nil
+    }
 }
 
 struct TodoWidgetEntryView: View {
@@ -136,6 +362,22 @@ struct TodoWidgetEntryView: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
+            // Database indicator at the top
+            if let currentDatabaseName = entry.currentDatabaseName {
+                HStack {
+                    Image(systemName: "cylinder.fill")
+                        .font(.system(size: 8))
+                        .foregroundColor(.secondary)
+                    Text(currentDatabaseName)
+                        .font(.system(size: 8, weight: .medium))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                    Spacer()
+                }
+                .padding(.horizontal, 2)
+                .padding(.bottom, 2)
+            }
+            
             // Content
             if entry.todos.isEmpty {
                 VStack(spacing: 8) {
@@ -150,7 +392,10 @@ struct TodoWidgetEntryView: View {
             } else {
                 VStack(spacing: 4) {
                     ForEach(entry.todos.prefix(3)) { todo in
-                        TodoRowView(todo: todo)
+                        Button(intent: EditTodoIntent(todoId: todo.id, databaseId: entry.configuration.database?.databaseId)) {
+                            TodoRowView(todo: todo)
+                        }
+                        .buttonStyle(PlainButtonStyle())
                         
                         if todo.id != entry.todos.prefix(3).last?.id {
                             Divider()
@@ -174,6 +419,17 @@ struct TodoWidgetEntryView: View {
         }
         .padding(.horizontal, 8)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        .widgetURL(buildWidgetURL())
+    }
+    
+    private func buildWidgetURL() -> URL? {
+        // If widget has a specific database configured, include it in the URL
+        if let database = entry.configuration.database {
+            return URL(string: "notiontodowidget://open?database=\(database.databaseId)")
+        } else {
+            // Fallback to generic open URL
+            return URL(string: "notiontodowidget://open")
+        }
     }
 }
 
