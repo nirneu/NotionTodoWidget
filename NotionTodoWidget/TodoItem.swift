@@ -1,6 +1,22 @@
 import Foundation
 import SwiftUI
 
+struct DatabaseConfiguration: Codable, Identifiable, Equatable {
+    let id: String
+    let name: String
+    let databaseId: String
+    let isActive: Bool
+    let createdAt: Date
+    
+    init(id: String = UUID().uuidString, name: String, databaseId: String, isActive: Bool = false, createdAt: Date = Date()) {
+        self.id = id
+        self.name = name
+        self.databaseId = databaseId
+        self.isActive = isActive
+        self.createdAt = createdAt
+    }
+}
+
 struct TodoItem: Codable, Identifiable, Equatable {
     let id: String
     let title: String
@@ -44,6 +60,17 @@ enum TodoStatus: String, Codable, CaseIterable {
     var isCompleted: Bool {
         return self == .completed
     }
+    
+    var systemImage: String {
+        switch self {
+        case .notStarted: return "circle"
+        case .inProgress: return "clock"
+        case .completed: return "checkmark.circle.fill"
+        case .cancelled: return "xmark.circle"
+        case .blocked: return "exclamationmark.triangle"
+        case .research: return "magnifyingglass.circle"
+        }
+    }
 }
 
 enum TodoPriority: String, Codable, CaseIterable {
@@ -71,6 +98,15 @@ enum TodoPriority: String, Codable, CaseIterable {
         case .high: return .orange
         case .medium: return .blue
         case .low: return .gray
+        }
+    }
+    
+    var systemImage: String {
+        switch self {
+        case .urgent: return "exclamationmark.3"
+        case .high: return "arrow.up.circle.fill"
+        case .medium: return "minus.circle.fill"
+        case .low: return "arrow.down.circle.fill"
         }
     }
 }

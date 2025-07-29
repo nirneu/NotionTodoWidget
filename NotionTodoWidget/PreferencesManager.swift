@@ -93,4 +93,24 @@ class PreferencesManager {
         // Default to all priorities
         return Set(TodoPriority.allCases)
     }
+    
+    // MARK: - Widget Database Configuration
+    
+    func saveWidgetDatabaseId(_ databaseId: String?) {
+        // Save to App Groups for widget access
+        UserDefaults(suiteName: suiteName)?.set(databaseId, forKey: "widgetDatabaseId")
+        // Save to regular UserDefaults as fallback
+        UserDefaults.standard.set(databaseId, forKey: "widgetDatabaseId")
+    }
+    
+    func loadWidgetDatabaseId() -> String? {
+        // Try App Groups first
+        if let sharedDefaults = UserDefaults(suiteName: suiteName),
+           let databaseId = sharedDefaults.string(forKey: "widgetDatabaseId") {
+            return databaseId
+        }
+        
+        // Fallback to regular UserDefaults
+        return UserDefaults.standard.string(forKey: "widgetDatabaseId")
+    }
 }
