@@ -188,3 +188,4 @@ The Notion database should have these properties:
 When making changes to data models, ensure both app and widget targets are updated. When modifying the widget, test thoroughly as widget debugging can be challenging. For Notion API changes, verify property name mappings and update parsing logic accordingly.
 
 **Database Setup Changes**: If modifying database configuration flow, ensure both automatic name fetching and URL extraction continue working. Test with various Notion URL formats and verify widget configuration defaults work properly.
+- I will do the build and run myself

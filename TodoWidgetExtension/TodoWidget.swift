@@ -197,12 +197,12 @@ struct TodoAppIntentTimelineProvider: AppIntentTimelineProvider {
     
     func placeholder(in context: TimelineProviderContext) -> TodoEntry {
         let defaultIntent = DatabaseSelectionIntent()
-        return TodoEntry(date: Date(), todos: Array(TodoItem.sampleData.prefix(3)), currentDatabaseName: "Sample Database", configuration: defaultIntent)
+        return TodoEntry(date: Date(), todos: Array(TodoItem.sampleData.prefix(6)), currentDatabaseName: "Sample Database", configuration: defaultIntent)
     }
     
     func snapshot(for configuration: DatabaseSelectionIntent, in context: TimelineProviderContext) async -> TodoEntry {
         let (todos, databaseName) = getCachedTodosWithDatabase(for: configuration)
-        return TodoEntry(date: Date(), todos: Array(todos.prefix(3)), currentDatabaseName: databaseName, configuration: configuration)
+        return TodoEntry(date: Date(), todos: Array(todos.prefix(6)), currentDatabaseName: databaseName, configuration: configuration)
     }
     
     func timeline(for configuration: DatabaseSelectionIntent, in context: TimelineProviderContext) async -> Timeline<TodoEntry> {
@@ -221,7 +221,7 @@ struct TodoAppIntentTimelineProvider: AppIntentTimelineProvider {
         
         if !cachedResult.todos.isEmpty {
             // We have cached data, use it
-            let todos = Array(cachedResult.todos.prefix(3))
+            let todos = Array(cachedResult.todos.prefix(10))
             let entry = TodoEntry(date: currentDate, todos: todos, currentDatabaseName: cachedResult.databaseName, configuration: configuration)
             
             let nextUpdate = Calendar.current.date(byAdding: .minute, value: 5, to: currentDate)!
@@ -243,7 +243,7 @@ struct TodoAppIntentTimelineProvider: AppIntentTimelineProvider {
                 return timeline
             } else {
                 // Not authenticated - show demo data with clear indication
-                let entry = TodoEntry(date: currentDate, todos: Array(TodoItem.sampleData.prefix(3)), currentDatabaseName: "Demo - Login Required", configuration: configuration)
+                let entry = TodoEntry(date: currentDate, todos: Array(TodoItem.sampleData.prefix(6)), currentDatabaseName: "Demo - Login Required", configuration: configuration)
                 
                 let nextUpdate = Calendar.current.date(byAdding: .minute, value: 15, to: currentDate)!
                 let timeline = Timeline(entries: [entry], policy: .after(nextUpdate))
@@ -359,6 +359,208 @@ struct TodoAppIntentTimelineProvider: AppIntentTimelineProvider {
 
 struct TodoWidgetEntryView: View {
     var entry: TodoEntry
+    @Environment(\.widgetFamily) var widgetFamily
+    
+    var body: some View {
+        switch widgetFamily {
+        case .systemSmall:
+            SmallWidgetView(entry: entry)
+        case .systemMedium:
+            MediumWidgetView(entry: entry)
+        case .systemLarge:
+            LargeWidgetView(entry: entry)
+        default:
+            MediumWidgetView(entry: entry) // fallback
+        }
+    }
+    
+    private func buildWidgetURL() -> URL? {
+        // If widget has a specific database configured, include it in the URL
+        if let database = entry.configuration.database {
+            return URL(string: "notiontodowidget://open?database=\(database.databaseId)")
+        } else {
+            // Fallback to generic open URL
+            return URL(string: "notiontodowidget://open")
+        }
+    }
+}
+
+// MARK: - Small Widget View
+
+struct SmallWidgetView: View {
+    let entry: TodoEntry
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            // Compact database indicator
+            if let currentDatabaseName = entry.currentDatabaseName {
+                HStack {
+                    Image(systemName: "cylinder.fill")
+                        .font(.system(size: 6))
+                        .foregroundColor(.secondary)
+                    Text(currentDatabaseName)
+                        .font(.system(size: 7, weight: .medium))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+                .padding(.bottom, 2)
+            }
+            
+            // Content
+            if entry.todos.isEmpty {
+                VStack(spacing: 4) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 16))
+                        .foregroundColor(.green)
+                    Text("All done!")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                VStack(spacing: 1) {
+                    ForEach(entry.todos.prefix(3)) { todo in
+                        Button(intent: EditTodoIntent(todoId: todo.id, databaseId: entry.configuration.database?.databaseId)) {
+                            SmallTodoRowView(todo: todo)
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                    }
+                }
+                
+                if entry.todos.count > 3 {
+                    Text("+ \(entry.todos.count - 3) more")
+                        .font(.system(size: 8, weight: .medium))
+                        .foregroundColor(.secondary)
+                        .padding(.top, 1)
+                }
+            }
+        }
+        .padding(.horizontal, 4)
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .widgetURL(buildWidgetURL(for: entry))
+    }
+}
+
+struct SmallTodoRowView: View {
+    let todo: TodoItem
+    
+    var body: some View {
+        HStack(spacing: 6) {
+            // Status indicator
+            Image(systemName: todo.status == .completed ? "checkmark.circle.fill" : "circle")
+                .foregroundColor(todo.status == .completed ? .green : .secondary)
+                .font(.system(size: 10))
+            
+            VStack(alignment: .leading, spacing: 1) {
+                // Title only - larger and clearer
+                Text(todo.title)
+                    .font(.system(size: 11, weight: .medium))
+                    .lineLimit(1)
+                    .strikethrough(todo.status == .completed)
+                    .foregroundColor(todo.status == .completed ? .secondary : .primary)
+                
+                // Only show the most important badge - priority or due date
+                HStack(spacing: 4) {
+                    if let priority = todo.priority, priority == .urgent || priority == .high {
+                        HStack(spacing: 1) {
+                            Image(systemName: priorityIcon(for: priority))
+                                .font(.system(size: 6, weight: .bold))
+                                .foregroundColor(.white)
+                            Text(priority.displayName)
+                                .font(.system(size: 7, weight: .medium))
+                                .foregroundColor(.white)
+                        }
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 2)
+                        .background(updatedPriorityColor(for: priority))
+                        .clipShape(Capsule())
+                    } else if let dueDate = todo.dueDate, isUrgentDate(dueDate) {
+                        HStack(spacing: 1) {
+                            Image(systemName: "calendar")
+                                .font(.system(size: 6))
+                                .foregroundColor(.white)
+                            Text(shortDateString(for: dueDate))
+                                .font(.system(size: 7, weight: .medium))
+                                .foregroundColor(.white)
+                                .lineLimit(1)
+                        }
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 2)
+                        .background(smartDueDateColor(for: dueDate))
+                        .clipShape(Capsule())
+                    }
+                    
+                    Spacer()
+                }
+            }
+        }
+        .padding(.vertical, 0)
+    }
+    
+    private func isUrgentDate(_ date: Date) -> Bool {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let dueDate = calendar.startOfDay(for: date)
+        let daysDifference = calendar.dateComponents([.day], from: today, to: dueDate).day ?? 0
+        return daysDifference <= 1 // Today or tomorrow or overdue
+    }
+    
+    private func shortDateString(for date: Date) -> String {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let dueDate = calendar.startOfDay(for: date)
+        
+        if dueDate < today {
+            let formatter = DateFormatter()
+            formatter.dateFormat = "M/d"
+            return formatter.string(from: date)
+        } else if dueDate == today {
+            return "Today"
+        } else {
+            let formatter = DateFormatter()
+            formatter.dateFormat = "M/d"
+            return formatter.string(from: date)
+        }
+    }
+    
+    private func priorityIcon(for priority: TodoPriority) -> String {
+        switch priority {
+        case .low: return "arrow.down"
+        case .medium: return "minus"
+        case .high: return "arrow.up"
+        case .urgent: return "exclamationmark.triangle.fill"
+        }
+    }
+    
+    private func updatedPriorityColor(for priority: TodoPriority) -> Color {
+        switch priority {
+        case .low: return Color(red: 0.0, green: 0.6, blue: 0.4)
+        case .medium: return Color(red: 0.8, green: 0.6, blue: 0.2)
+        case .high: return Color(red: 0.8, green: 0.3, blue: 0.3)
+        case .urgent: return Color(red: 0.7, green: 0.2, blue: 0.2)
+        }
+    }
+    
+    private func smartDueDateColor(for date: Date) -> Color {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let dueDate = calendar.startOfDay(for: date)
+        
+        if dueDate < today {
+            return Color(red: 0.8, green: 0.3, blue: 0.3)
+        } else if dueDate == today {
+            return Color(red: 0.9, green: 0.5, blue: 0.1)
+        } else {
+            return Color(red: 0.6, green: 0.6, blue: 0.6)
+        }
+    }
+}
+
+// MARK: - Medium Widget View (keeping existing layout)
+
+struct MediumWidgetView: View {
+    let entry: TodoEntry
     
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -415,21 +617,211 @@ struct TodoWidgetEntryView: View {
                     }
                 }
             }
-            
         }
         .padding(.horizontal, 8)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-        .widgetURL(buildWidgetURL())
+        .widgetURL(buildWidgetURL(for: entry))
+    }
+}
+
+// MARK: - Large Widget View (using full space)
+
+struct LargeWidgetView: View {
+    let entry: TodoEntry
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // Database indicator at the top
+            if let currentDatabaseName = entry.currentDatabaseName {
+                HStack {
+                    Image(systemName: "cylinder.fill")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                    Text(currentDatabaseName)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                    Spacer()
+                }
+                .padding(.bottom, 4)
+            }
+            
+            // Content using full height
+            if entry.todos.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 32))
+                        .foregroundColor(.green)
+                    Text("All done!")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                VStack(spacing: 3) {
+                    ForEach(entry.todos.prefix(6)) { todo in
+                        Button(intent: EditTodoIntent(todoId: todo.id, databaseId: entry.configuration.database?.databaseId)) {
+                            LargeTodoRowView(todo: todo)
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                        
+                        if todo.id != entry.todos.prefix(6).last?.id {
+                            Divider()
+                                .padding(.horizontal, 4)
+                        }
+                    }
+                    
+                    if entry.todos.count > 6 {
+                        HStack {
+                            Spacer()
+                            Text("+ \(entry.todos.count - 6) more tasks")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(.secondary)
+                                .padding(.top, 2)
+                            Spacer()
+                        }
+                    }
+                    
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .widgetURL(buildWidgetURL(for: entry))
+    }
+}
+
+struct LargeTodoRowView: View {
+    let todo: TodoItem
+    
+    var body: some View {
+        HStack(spacing: 12) {
+            // Status indicator
+            Image(systemName: todo.status == .completed ? "checkmark.circle.fill" : "circle")
+                .foregroundColor(todo.status == .completed ? .green : .secondary)
+                .font(.system(size: 16))
+            
+            VStack(alignment: .leading, spacing: 2) {
+                // Title - larger for readability
+                Text(todo.title)
+                    .font(.system(size: 16, weight: .medium))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .strikethrough(todo.status == .completed)
+                    .foregroundColor(todo.status == .completed ? .secondary : .primary)
+                
+                // Status, Priority, and Due date row with more space
+                HStack {
+                    // Status and Priority grouped together on left
+                    HStack(spacing: 8) {
+                        // Status badge
+                        Text(todo.status.displayName)
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(statusColor(for: todo.status))
+                            .clipShape(Capsule())
+                        
+                        // Priority next to status
+                        if let priority = todo.priority {
+                            HStack(spacing: 3) {
+                                Image(systemName: priorityIcon(for: priority))
+                                    .font(.system(size: 8, weight: .bold))
+                                    .foregroundColor(.white)
+                                Text(priority.displayName)
+                                    .font(.system(size: 9, weight: .medium))
+                                    .foregroundColor(.white)
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(updatedPriorityColor(for: priority))
+                            .clipShape(Capsule())
+                        }
+                    }
+                    
+                    Spacer()
+                    
+                    // Due date on far right
+                    if let dueDate = todo.dueDate {
+                        HStack(spacing: 3) {
+                            Image(systemName: "calendar")
+                                .font(.system(size: 8, weight: .medium))
+                                .foregroundColor(.white)
+                            Text(relativeDateString(for: dueDate))
+                                .font(.system(size: 9, weight: .medium))
+                                .foregroundColor(.white)
+                                .lineLimit(1)
+                                .fixedSize()
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(smartDueDateColor(for: dueDate))
+                        .clipShape(Capsule())
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 4)
     }
     
-    private func buildWidgetURL() -> URL? {
-        // If widget has a specific database configured, include it in the URL
-        if let database = entry.configuration.database {
-            return URL(string: "notiontodowidget://open?database=\(database.databaseId)")
-        } else {
-            // Fallback to generic open URL
-            return URL(string: "notiontodowidget://open")
+    private func statusColor(for status: TodoStatus) -> Color {
+        switch status {
+        case .notStarted: return .gray
+        case .inProgress: return .blue
+        case .completed: return .green
+        case .cancelled: return .red
+        case .blocked: return .red
+        case .research: return .orange
         }
+    }
+    
+    private func relativeDateString(for date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        return formatter.string(from: date)
+    }
+    
+    private func priorityIcon(for priority: TodoPriority) -> String {
+        switch priority {
+        case .low: return "arrow.down"
+        case .medium: return "minus"
+        case .high: return "arrow.up"
+        case .urgent: return "exclamationmark.triangle.fill"
+        }
+    }
+    
+    private func updatedPriorityColor(for priority: TodoPriority) -> Color {
+        switch priority {
+        case .low: return Color(red: 0.0, green: 0.6, blue: 0.4)
+        case .medium: return Color(red: 0.8, green: 0.6, blue: 0.2)
+        case .high: return Color(red: 0.8, green: 0.3, blue: 0.3)
+        case .urgent: return Color(red: 0.7, green: 0.2, blue: 0.2)
+        }
+    }
+    
+    private func smartDueDateColor(for date: Date) -> Color {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let dueDate = calendar.startOfDay(for: date)
+        
+        if dueDate < today {
+            return Color(red: 0.8, green: 0.3, blue: 0.3)
+        } else if dueDate == today {
+            return Color(red: 0.9, green: 0.5, blue: 0.1)
+        } else {
+            return Color(red: 0.6, green: 0.6, blue: 0.6)
+        }
+    }
+}
+
+// Helper function for widget URL
+private func buildWidgetURL(for entry: TodoEntry) -> URL? {
+    if let database = entry.configuration.database {
+        return URL(string: "notiontodowidget://open?database=\(database.databaseId)")
+    } else {
+        return URL(string: "notiontodowidget://open")
     }
 }
 

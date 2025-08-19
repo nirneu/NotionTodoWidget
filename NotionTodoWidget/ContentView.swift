@@ -11,10 +11,14 @@ struct ContentView: View {
     @State private var showingSortOptions = false
     @State private var showingDatabaseManager = false
     @State private var showingAddDatabase = false
-    @State private var selectedTodo: TodoItem?
-    @State private var showingTaskEditor = false
-    @State private var selectedTaskId: String?
-    @State private var showingTaskDetail = false
+    @State private var showingAPIKeyHelp = false
+    @State private var statusPickerTodo: TodoItem?
+    @State private var priorityPickerTodo: TodoItem?
+    @State private var datePickerTodo: TodoItem?
+    @State private var titleEditorTodo: TodoItem?
+    @State private var availableDatabases: [(id: String, name: String)] = []
+    @State private var isLoadingDatabases = false
+    @State private var selectedDatabaseOption: (id: String, name: String)?
     
     var body: some View {
         NavigationView {
@@ -28,6 +32,17 @@ struct ContentView: View {
             .navigationTitle("Todo Widget")
             .navigationBarTitleDisplayMode(.large)
             .background(Color(.systemBackground))
+            .toolbar {
+                if notionService.apiKey != nil && !notionService.isAuthenticated {
+                    // Show sign out button when API key exists but no databases are configured
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        Button("Sign Out") {
+                            notionService.signOut()
+                        }
+                        .foregroundColor(.red)
+                    }
+                }
+            }
         }
         .onAppear {
             if notionService.isAuthenticated {
@@ -62,43 +77,51 @@ struct ContentView: View {
     // MARK: - Setup View
     
     private var setupView: some View {
-        VStack(spacing: 32) {
-            VStack(spacing: 16) {
-                Image(systemName: "widget.large.badge.plus")
-                    .font(.system(size: 64))
-                    .foregroundColor(.accentColor)
-                
-                Text("Welcome to Todo Widget")
-                    .font(.title)
-                    .fontWeight(.semibold)
+        ScrollView {
+            VStack(spacing: 32) {
+                VStack(spacing: 16) {
+                    Image(systemName: "widget.large.badge.plus")
+                        .font(.system(size: 64))
+                        .foregroundColor(.accentColor)
+                    
+                    Text("Welcome to Todo Widget")
+                        .font(.title)
+                        .fontWeight(.semibold)
+                    
+                    if notionService.apiKey == nil {
+                        Text("Enter your Notion API key to get started")
+                            .font(.body)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                    } else {
+                        Text("Add your first database to continue")
+                            .font(.body)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                }
                 
                 if notionService.apiKey == nil {
-                    Text("Enter your Notion API key to get started")
-                        .font(.body)
-                        .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
+                    apiKeySection
                 } else {
-                    Text("Add your first database to continue")
-                        .font(.body)
-                        .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
+                    databaseManagementSection
+                }
+                
+                if notionService.apiKey == nil {
+                    Button("How to get your API key") {
+                        showingAPIKeyHelp = true
+                    }
+                    .foregroundColor(.blue)
+                    .font(.subheadline)
                 }
             }
-            
-            if notionService.apiKey == nil {
-                apiKeySection
-            } else {
-                databaseManagementSection
-            }
-            
-            Button("Use Demo Data") {
-                useDemoData()
-            }
-            .font(.caption)
+            .padding(32)
         }
-        .padding(32)
         .sheet(isPresented: $showingAddDatabase) {
             addDatabaseSheet
+        }
+        .sheet(isPresented: $showingAPIKeyHelp) {
+            apiKeyHelpSheet
         }
     }
     
@@ -147,51 +170,266 @@ struct ContentView: View {
                     }
                 }
             }
+            
         }
     }
     
     private var addDatabaseSheet: some View {
         NavigationView {
-            VStack(spacing: 24) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Database Name")
-                        .font(.headline)
-                    
-                    TextField("e.g., Personal Tasks", text: $databaseName)
-                        .textFieldStyle(.roundedBorder)
+            VStack(spacing: 20) {
+                if isLoadingDatabases {
+                    VStack(spacing: 16) {
+                        ProgressView()
+                            .scaleEffect(1.2)
+                        Text("Finding your databases...")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if availableDatabases.isEmpty {
+                    VStack(spacing: 16) {
+                        Image(systemName: "cylinder.fill")
+                            .font(.system(size: 48))
+                            .foregroundColor(.secondary)
+                        
+                        Text("No databases found")
+                            .font(.headline)
+                        
+                        Text("Make sure your integration has access to databases in your workspace")
+                            .font(.body)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal)
+                        
+                        Button("Retry") {
+                            loadAvailableDatabases()
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("Select a database to add:")
+                            .font(.headline)
+                            .padding(.horizontal)
+                        
+                        List(availableDatabases, id: \.id) { database in
+                            Button(action: {
+                                selectedDatabaseOption = database
+                            }) {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(database.name)
+                                            .font(.body)
+                                            .fontWeight(.medium)
+                                            .foregroundColor(.primary)
+                                        
+                                        Text(database.id)
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                            .lineLimit(1)
+                                    }
+                                    
+                                    Spacer()
+                                    
+                                    Image(systemName: selectedDatabaseOption?.id == database.id ? "checkmark.circle.fill" : "circle")
+                                        .foregroundColor(selectedDatabaseOption?.id == database.id ? .accentColor : .secondary)
+                                }
+                                .padding(.vertical, 4)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .listStyle(.plain)
+                    }
                 }
-                
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Database ID")
-                        .font(.headline)
-                    
-                    TextField("Enter your Notion database ID", text: $databaseId)
-                        .textFieldStyle(.roundedBorder)
-                        .autocapitalization(.none)
-                        .disableAutocorrection(true)
-                }
-                
-                Spacer()
             }
-            .padding()
             .navigationTitle("Add Database")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button("Cancel") {
-                        showingAddDatabase = false
-                        databaseName = ""
-                        databaseId = ""
+                        dismissAddDatabaseSheet()
                     }
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Add") {
-                        notionService.addDatabase(name: databaseName, databaseId: databaseId)
-                        showingAddDatabase = false
-                        databaseName = ""
-                        databaseId = ""
+                        if let selected = selectedDatabaseOption {
+                            addDatabaseToSetup(name: selected.name, databaseId: selected.id)
+                            dismissAddDatabaseSheet()
+                        }
                     }
-                    .disabled(databaseName.isEmpty || databaseId.isEmpty)
+                    .disabled(selectedDatabaseOption == nil)
+                }
+            }
+            .onAppear {
+                loadAvailableDatabases()
+            }
+        }
+    }
+    
+    private func loadAvailableDatabases() {
+        isLoadingDatabases = true
+        notionService.fetchAvailableDatabases { result in
+            self.isLoadingDatabases = false
+            switch result {
+            case .success(let databases):
+                self.availableDatabases = databases
+            case .failure(let error):
+                print("Failed to fetch databases: \(error.localizedDescription)")
+                self.availableDatabases = []
+            }
+        }
+    }
+    
+    private func addDatabaseToSetup(name: String, databaseId: String) {
+        // Add database directly without causing immediate loading state in main view
+        let newDatabase = DatabaseConfiguration(
+            name: name,
+            databaseId: databaseId,
+            isActive: notionService.databases.isEmpty
+        )
+        
+        // Add to NotionService databases list
+        notionService.databases.append(newDatabase)
+        
+        // Save to persistent storage
+        var savedDbs = notionService.databases
+        if let data = try? JSONEncoder().encode(savedDbs) {
+            UserDefaults.standard.set(data, forKey: "NotionDatabases")
+        }
+        
+        // Set as active database if it's the first one
+        if notionService.databases.count == 1 {
+            notionService.activeDatabaseId = newDatabase.id
+        }
+        
+        // Update authentication status - will automatically transition to main view
+        notionService.checkAuthenticationStatus()
+        
+        // Data will be fetched when main view appears due to authentication change
+    }
+    
+    private func dismissAddDatabaseSheet() {
+        showingAddDatabase = false
+        availableDatabases = []
+        selectedDatabaseOption = nil
+        isLoadingDatabases = false
+    }
+    
+    private var apiKeyHelpSheet: some View {
+        NavigationView {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("Getting Your Notion API Key")
+                            .font(.title2)
+                            .fontWeight(.semibold)
+                        
+                        Text("Quick setup - just 4 simple steps:")
+                            .font(.body)
+                            .foregroundColor(.secondary)
+                    }
+                    
+                    VStack(alignment: .leading, spacing: 20) {
+                        stepView(
+                            number: "1",
+                            title: "Open Notion Integrations",
+                            description: "Tap the link below to go to your integrations page",
+                            link: "https://www.notion.so/profile/integrations"
+                        )
+                        
+                        stepView(
+                            number: "2",
+                            title: "Create Integration",
+                            description: "Click '+ New integration', name it 'Todo Widget', choose your workspace, and select 'Internal' type"
+                        )
+                        
+                        stepView(
+                            number: "3",
+                            title: "Add Database Access",
+                            description: "Go to 'Access' tab → '+ Select pages' → choose your todo database"
+                        )
+                        
+                        stepView(
+                            number: "4",
+                            title: "Copy API Key",
+                            description: "Go to 'Configuration' tab → click 'Show' → copy the token and paste it in the app"
+                        )
+                    }
+                    
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("💡 Good to know:")
+                            .font(.headline)
+                            .foregroundColor(.blue)
+                        
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("• Default capabilities (Read, Update, Insert) are perfect")
+                            Text("• Your database needs Status, Priority, and Due Date columns")
+                            Text("• Always use the main database, not filtered views")
+                            Text("• Keep your API key private and secure")
+                        }
+                    }
+                    .font(.body)
+                    .foregroundColor(.secondary)
+                    .padding(.vertical, 12)
+                    .padding(.horizontal, 16)
+                    .background(Color(.systemBlue).opacity(0.1))
+                    .cornerRadius(8)
+                }
+                .padding(24)
+            }
+            .navigationTitle("API Key Help")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") {
+                        showingAPIKeyHelp = false
+                    }
+                }
+            }
+        }
+    }
+    
+    private func stepView(number: String, title: String, description: String, link: String? = nil) -> some View {
+        HStack(alignment: .top, spacing: 16) {
+            Text(number)
+                .font(.headline)
+                .fontWeight(.bold)
+                .foregroundColor(.white)
+                .frame(width: 32, height: 32)
+                .background(Color.accentColor)
+                .clipShape(Circle())
+            
+            VStack(alignment: .leading, spacing: 8) {
+                Text(title)
+                    .font(.headline)
+                    .fontWeight(.medium)
+                
+                Text(description)
+                    .font(.body)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                
+                if let link = link {
+                    Button(action: {
+                        if let url = URL(string: link) {
+                            UIApplication.shared.open(url)
+                        }
+                    }) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "link")
+                                .font(.caption)
+                            Text("Open Notion Integrations")
+                                .font(.subheadline)
+                                .fontWeight(.medium)
+                        }
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Color.accentColor)
+                        .cornerRadius(8)
+                    }
+                    .buttonStyle(.plain)
                 }
             }
         }
@@ -314,10 +552,15 @@ extension ContentView {
                     TodoRowView(todo: todo) { updatedTodo, newStatus in
                         notionService.updateTodoStatus(updatedTodo, status: newStatus)
                     } onTodoTap: { tappedTodo in
-                        print("📱 Main List: Tapped todo: \(tappedTodo.title) (ID: \(tappedTodo.id))")
-                        selectedTaskId = tappedTodo.id
-                        showingTaskDetail = true
-                        print("📱 Main List: Set showingTaskDetail = true")
+                        // No longer needed - individual property taps replace this
+                    } onTitleTap: { tappedTodo in
+                        titleEditorTodo = tappedTodo
+                    } onStatusTap: { tappedTodo in
+                        statusPickerTodo = tappedTodo
+                    } onPriorityTap: { tappedTodo in
+                        priorityPickerTodo = tappedTodo
+                    } onDueDateTap: { tappedTodo in
+                        datePickerTodo = tappedTodo
                     }
                     .environmentObject(notionService)
                 }
@@ -336,25 +579,23 @@ extension ContentView {
             DatabaseManagerView()
                 .environmentObject(notionService)
         }
-        .sheet(isPresented: $showingTaskEditor) {
-            if let selectedTodo = selectedTodo {
-                IndividualTaskEditorView(todo: selectedTodo)
-                    .environmentObject(notionService)
+        .sheet(item: $statusPickerTodo) { todo in
+            StatusPickerView(todo: todo) { updatedTodo, newStatus in
+                notionService.updateTodoStatus(updatedTodo, status: newStatus)
             }
+            .environmentObject(notionService)
         }
-        .sheet(isPresented: $showingTaskDetail) {
-            if let selectedTaskId = selectedTaskId {
-                TaskDetailView(todoId: selectedTaskId)
-                    .environmentObject(notionService)
-                    .onAppear {
-                        print("📋 Sheet: Presenting TaskDetailView for ID: \(selectedTaskId)")
-                    }
-            } else {
-                Text("Error: No task selected")
-                    .onAppear {
-                        print("❌ Sheet: selectedTaskId is nil")
-                    }
-            }
+        .sheet(item: $priorityPickerTodo) { todo in
+            PriorityPickerView(todo: todo)
+                .environmentObject(notionService)
+        }
+        .sheet(item: $datePickerTodo) { todo in
+            DatePickerView(todo: todo)
+                .environmentObject(notionService)
+        }
+        .sheet(item: $titleEditorTodo) { todo in
+            TitleEditorView(todo: todo)
+                .environmentObject(notionService)
         }
     }
     
@@ -430,9 +671,13 @@ extension ContentView {
             // Check if a specific database was requested for this todo
             handleDatabaseSwitchIfNeeded(url)
             
-            selectedTaskId = todoId
-            showingTaskDetail = true
-            print("🔗 URL Handler: Set showingTaskDetail = true")
+            // Find the todo and show title editor by default for URL-based editing
+            if let todo = notionService.todos.first(where: { $0.id == todoId }) {
+                titleEditorTodo = todo
+                print("🔗 URL Handler: Opening title editor for todo: \(todo.title)")
+            } else {
+                print("❌ URL Handler: Todo not found with ID: \(todoId)")
+            }
         default:
             break
         }
@@ -544,81 +789,119 @@ struct TodoRowView: View {
     let todo: TodoItem
     let onStatusUpdate: (TodoItem, TodoStatus) -> Void
     let onTodoTap: (TodoItem) -> Void
+    let onTitleTap: (TodoItem) -> Void
+    let onStatusTap: (TodoItem) -> Void
+    let onPriorityTap: (TodoItem) -> Void
+    let onDueDateTap: (TodoItem) -> Void
     @EnvironmentObject var notionService: NotionService
     
     var body: some View {
-        Button(action: {
-            onTodoTap(todo)
-        }) {
-            HStack(spacing: 12) {
-                // Status toggle button (separate from main tap)
-                Button {
-                    let newStatus: TodoStatus = todo.status.isCompleted ? .notStarted : .completed
-                    onStatusUpdate(todo, newStatus)
-                } label: {
-                    Image(systemName: todo.status.isCompleted ? "checkmark.circle.fill" : "circle")
-                        .font(.title2)
-                        .foregroundColor(todo.status.isCompleted ? .green : .secondary)
-                }
-                .buttonStyle(.plain)
-            
-                VStack(alignment: .leading, spacing: 8) {
-                    // Title (non-interactive, whole row is clickable)
+        HStack(spacing: 12) {
+            // Status toggle button (separate from main tap)
+            Button {
+                let newStatus: TodoStatus = todo.status.isCompleted ? .notStarted : .completed
+                onStatusUpdate(todo, newStatus)
+            } label: {
+                Image(systemName: todo.status.isCompleted ? "checkmark.circle.fill" : "circle")
+                    .font(.title2)
+                    .foregroundColor(todo.status.isCompleted ? .green : .secondary)
+            }
+            .buttonStyle(.plain)
+        
+            VStack(alignment: .leading, spacing: 8) {
+                // Title (tappable for editing)
+                Button(action: {
+                    onTitleTap(todo)
+                }) {
                     Text(todo.title)
                         .font(.system(size: 17, weight: .medium))
                         .strikethrough(todo.status.isCompleted)
                         .foregroundColor(todo.status.isCompleted ? .secondary : .primary)
                         .lineLimit(nil)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+                
+                HStack {
+                    // Status badge (tappable) - give it more space
+                    Button(action: {
+                        onStatusTap(todo)
+                    }) {
+                        Text(todo.status.displayName)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 5)
+                            .background(statusColor(for: todo.status))
+                            .clipShape(Capsule())
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                    }
+                    .buttonStyle(.plain)
                     
-                    HStack {
-                        // Status and Priority grouped together on left (display only)
-                        HStack(spacing: 8) {
-                            // Status badge (display only)
-                            Text(todo.status.displayName)
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 5)
-                                .background(statusColor(for: todo.status))
-                                .clipShape(Capsule())
-                            
-                            // Priority (display only)
-                            if let priority = todo.priority {
-                                HStack(spacing: 3) {
-                                    Image(systemName: priorityIcon(for: priority))
-                                        .font(.system(size: 9, weight: .bold))
-                                        .foregroundColor(.white)
-                                    Text(priority.displayName)
-                                        .font(.system(size: 12, weight: .medium))
-                                        .foregroundColor(.white)
-                                }
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 5)
-                                .background(updatedPriorityColor(for: priority))
-                                .clipShape(Capsule())
-                            }
-                        }
-                        
-                        Spacer()
-                        
-                        // Due date (display only)
-                        if let dueDate = todo.dueDate {
-                            HStack(spacing: 3) {
-                                Image(systemName: "calendar")
-                                    .font(.system(size: 9, weight: .medium))
+                    // Priority text positioned close to status
+                    HStack(spacing: 4) {
+                        if let priority = todo.priority {
+                            Button(action: {
+                                onPriorityTap(todo)
+                            }) {
+                                Text(priority.displayName)
+                                    .font(.system(size: 12, weight: .medium))
                                     .foregroundColor(.white)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 5)
+                                    .background(updatedPriorityColor(for: priority))
+                                    .clipShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        } else {
+                            // Show compact priority placeholder
+                            Button(action: {
+                                onPriorityTap(todo)
+                            }) {
+                                Text("Priority")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundColor(.secondary)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 5)
+                                    .background(Color(.systemGray5))
+                                    .clipShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    
+                    Spacer()
+                    
+                    // Due date on the right
+                    HStack(spacing: 6) {
+                        
+                        // Due date (tappable)
+                        Button(action: {
+                            onDueDateTap(todo)
+                        }) {
+                            if let dueDate = todo.dueDate {
                                 Text(dueDateText(for: dueDate))
                                     .font(.system(size: 12, weight: .medium))
                                     .foregroundColor(.white)
                                     .lineLimit(1)
                                     .fixedSize()
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 5)
+                                    .background(smartDueDateColor(for: dueDate))
+                                    .clipShape(Capsule())
+                            } else {
+                                // Show compact "Add Due Date" button if no due date is set
+                                Text("Due Date")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundColor(.secondary)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 5)
+                                    .background(Color(.systemGray5))
+                                    .clipShape(Capsule())
                             }
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 5)
-                            .background(smartDueDateColor(for: dueDate))
-                            .clipShape(Capsule())
                         }
+                        .buttonStyle(.plain)
                     }
                 }
             }
@@ -633,7 +916,6 @@ struct TodoRowView: View {
                 .opacity(0.3),
             alignment: .bottom
         )
-        .buttonStyle(.plain)
     }
     
     private func statusColor(for status: TodoStatus) -> Color {
@@ -956,18 +1238,13 @@ struct PriorityPickerView: View {
                     }) {
                         HStack {
                             // Priority badge preview
-                            HStack(spacing: 3) {
-                                Image(systemName: priorityIcon(for: priority))
-                                    .font(.system(size: 9, weight: .bold))
-                                    .foregroundColor(.white)
-                                Text(priority.displayName)
-                                    .font(.system(size: 12, weight: .medium))
-                                    .foregroundColor(.white)
-                            }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 5)
-                            .background(priorityColor(for: priority))
-                            .clipShape(Capsule())
+                            Text(priority.displayName)
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(priorityColor(for: priority))
+                                .clipShape(Capsule())
                             
                             Spacer()
                             
@@ -1034,14 +1311,9 @@ struct DatePickerView: View {
                         Text("Current Due Date")
                             .font(.headline)
                         
-                        HStack(spacing: 3) {
-                            Image(systemName: "calendar")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundColor(.white)
-                            Text(dueDateText(for: currentDueDate))
-                                .font(.system(size: 14, weight: .medium))
-                                .foregroundColor(.white)
-                        }
+                        Text(dueDateText(for: currentDueDate))
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.white)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
                         .background(smartDueDateColor(for: currentDueDate))
@@ -1169,28 +1441,6 @@ struct TitleEditorView: View {
                 .padding(.horizontal, 20)
                 
                 Spacer()
-                
-                // Action buttons
-                VStack(spacing: 12) {
-                    Button("Update Title") {
-                        let trimmedTitle = editedTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-                        if !trimmedTitle.isEmpty && trimmedTitle != todo.title {
-                            notionService.updateTodoTitle(todo, title: trimmedTitle)
-                        }
-                        dismiss()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .frame(maxWidth: .infinity)
-                    .disabled(editedTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    
-                    Button("Revert to Original") {
-                        editedTitle = todo.title
-                    }
-                    .foregroundColor(.orange)
-                    .frame(maxWidth: .infinity)
-                }
-                .padding(.horizontal, 20)
-                .padding(.bottom, 20)
             }
             .navigationTitle("Edit Title")
             .navigationBarTitleDisplayMode(.inline)
@@ -1225,6 +1475,11 @@ struct DatabaseManagerView: View {
     @State private var showingEditDatabase = false
     @State private var isLoadingDatabaseInfo = false
     
+    // New database picker states
+    @State private var availableDatabases: [(id: String, name: String)] = []
+    @State private var isLoadingDatabases = false
+    @State private var selectedDatabaseOption: (id: String, name: String)?
+    
     var body: some View {
         NavigationView {
             VStack(spacing: 24) {
@@ -1246,7 +1501,7 @@ struct DatabaseManagerView: View {
                             .foregroundColor(.secondary)
                             .font(.body)
                     } else {
-                        LazyVStack(spacing: 8) {
+                        LazyVStack(spacing: 12) {
                             ForEach(notionService.databases) { database in
                                 DatabaseManagerRow(
                                     database: database, 
@@ -1257,6 +1512,9 @@ struct DatabaseManagerView: View {
                                         databaseId = database.databaseId
                                         isLoadingDatabaseInfo = false
                                         showingEditDatabase = true
+                                    },
+                                    onDelete: {
+                                        removeDatabaseFromManagement(database)
                                     }
                                 )
                             }
@@ -1278,100 +1536,93 @@ struct DatabaseManagerView: View {
             }
             .sheet(isPresented: $showingAddDatabase) {
                 NavigationView {
-                    VStack(spacing: 24) {
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text("How to get your Notion database ID:")
-                                .font(.subheadline)
-                                .fontWeight(.medium)
-                            
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack(alignment: .top, spacing: 8) {
-                                    Text("1.")
-                                        .fontWeight(.medium)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("Go to your source database (not a filtered view)")
-                                        Text("⚠️ Important: Must be the main database, not a view")
-                                            .font(.caption2)
-                                            .foregroundColor(.orange)
-                                            .fontWeight(.medium)
-                                    }
-                                }
-                                HStack(alignment: .top, spacing: 8) {
-                                    Text("2.")
-                                        .fontWeight(.medium)
-                                    Text("Click the '•••' menu → 'Copy link to view'")
-                                }
-                                HStack(alignment: .top, spacing: 8) {
-                                    Text("3.")
-                                        .fontWeight(.medium)
-                                    Text("Paste the URL below - we'll extract the ID and name automatically")
-                                }
+                    VStack(spacing: 20) {
+                        if isLoadingDatabases {
+                            VStack(spacing: 16) {
+                                ProgressView()
+                                    .scaleEffect(1.2)
+                                Text("Finding your databases...")
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
                             }
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        }
-                        .padding(.vertical, 8)
-                        .padding(.horizontal, 12)
-                        .background(Color(.systemGray6))
-                        .cornerRadius(8)
-                        
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Text("Notion Database URL")
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        } else if availableDatabases.isEmpty {
+                            VStack(spacing: 16) {
+                                Image(systemName: "cylinder.fill")
+                                    .font(.system(size: 48))
+                                    .foregroundColor(.secondary)
+                                
+                                Text("No databases found")
                                     .font(.headline)
-                                if isLoadingDatabaseInfo {
-                                    ProgressView()
-                                        .scaleEffect(0.8)
+                                
+                                Text("Make sure your integration has access to databases in your workspace")
+                                    .font(.body)
+                                    .foregroundColor(.secondary)
+                                    .multilineTextAlignment(.center)
+                                    .padding(.horizontal)
+                                
+                                Button("Retry") {
+                                    loadAvailableDatabases()
                                 }
-                                if !databaseName.isEmpty {
-                                    Text("(\(databaseName))")
-                                        .font(.caption)
-                                        .foregroundColor(.green)
-                                        .fontWeight(.medium)
-                                }
+                                .buttonStyle(.borderedProminent)
                             }
-                            
-                            TextField("Paste your Notion database URL here", text: $databaseId)
-                                .textFieldStyle(.roundedBorder)
-                                .autocapitalization(.none)
-                                .disableAutocorrection(true)
-                                .onChange(of: databaseId) { oldValue, newValue in
-                                    // Extract database ID from URL if it's a valid Notion URL
-                                    if let extractedId = extractDatabaseId(from: newValue) {
-                                        databaseId = extractedId
-                                        // Auto-fetch database name
-                                        fetchDatabaseName(for: extractedId)
-                                    } else {
-                                        // Reset database name if URL is invalid
-                                        databaseName = ""
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        } else {
+                            VStack(alignment: .leading, spacing: 16) {
+                                Text("Select a database to add:")
+                                    .font(.headline)
+                                    .padding(.horizontal)
+                                
+                                List(availableDatabases, id: \.id) { database in
+                                    Button(action: {
+                                        selectedDatabaseOption = database
+                                    }) {
+                                        HStack {
+                                            VStack(alignment: .leading, spacing: 4) {
+                                                Text(database.name)
+                                                    .font(.body)
+                                                    .fontWeight(.medium)
+                                                    .foregroundColor(.primary)
+                                                
+                                                Text(database.id)
+                                                    .font(.caption)
+                                                    .foregroundColor(.secondary)
+                                                    .lineLimit(1)
+                                            }
+                                            
+                                            Spacer()
+                                            
+                                            Image(systemName: selectedDatabaseOption?.id == database.id ? "checkmark.circle.fill" : "circle")
+                                                .foregroundColor(selectedDatabaseOption?.id == database.id ? .accentColor : .secondary)
+                                        }
+                                        .padding(.vertical, 4)
                                     }
+                                    .buttonStyle(.plain)
                                 }
+                                .listStyle(.plain)
+                            }
                         }
-                        
-                        Spacer()
                     }
-                    .padding()
                     .navigationTitle("Add Database")
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbar {
                         ToolbarItem(placement: .navigationBarLeading) {
                             Button("Cancel") {
-                                showingAddDatabase = false
-                                databaseName = ""
-                                databaseId = ""
-                                isLoadingDatabaseInfo = false
+                                dismissAddDatabaseSheet()
                             }
                         }
                         ToolbarItem(placement: .navigationBarTrailing) {
                             Button("Add") {
-                                notionService.addDatabase(name: databaseName, databaseId: databaseId)
-                                showingAddDatabase = false
-                                databaseName = ""
-                                databaseId = ""
-                                isLoadingDatabaseInfo = false
+                                if let selected = selectedDatabaseOption {
+                                    addDatabaseToManagement(name: selected.name, databaseId: selected.id)
+                                    dismissAddDatabaseSheet()
+                                }
                             }
-                            .disabled(databaseName.isEmpty || databaseId.isEmpty)
+                            .disabled(selectedDatabaseOption == nil)
                         }
+                    }
+                    .onAppear {
+                        loadAvailableDatabases()
                     }
                 }
             }
@@ -1540,12 +1791,101 @@ struct DatabaseManagerView: View {
         
         return nil
     }
+    
+    // MARK: - Helper Functions for Database Management
+    
+    private func loadAvailableDatabases() {
+        isLoadingDatabases = true
+        notionService.fetchAvailableDatabases { result in
+            self.isLoadingDatabases = false
+            switch result {
+            case .success(let databases):
+                self.availableDatabases = databases
+            case .failure(let error):
+                print("Failed to fetch databases: \(error.localizedDescription)")
+                self.availableDatabases = []
+            }
+        }
+    }
+    
+    private func dismissAddDatabaseSheet() {
+        showingAddDatabase = false
+        availableDatabases = []
+        selectedDatabaseOption = nil
+        isLoadingDatabases = false
+    }
+    
+    private func addDatabaseToManagement(name: String, databaseId: String) {
+        // Add database directly without causing navigation state changes
+        let newDatabase = DatabaseConfiguration(
+            name: name,
+            databaseId: databaseId,
+            isActive: notionService.databases.isEmpty
+        )
+        
+        // Add to NotionService databases list
+        notionService.databases.append(newDatabase)
+        
+        // Save to persistent storage
+        var savedDbs = notionService.databases
+        if let data = try? JSONEncoder().encode(savedDbs) {
+            UserDefaults.standard.set(data, forKey: "NotionDatabases")
+        }
+        
+        // Set as active database if it's the first one
+        if notionService.databases.count == 1 {
+            notionService.activeDatabaseId = newDatabase.id
+        }
+        
+        // Update authentication status without triggering loading UI
+        notionService.checkAuthenticationStatus()
+        
+        // Don't fetch database schema here to avoid loading state showing in main view
+        // Data will be fetched when user navigates to main view naturally
+    }
+    
+    private func removeDatabaseFromManagement(_ database: DatabaseConfiguration) {
+        // Remove database directly without causing navigation state changes
+        notionService.databases.removeAll { $0.id == database.id }
+        
+        // Clean up cached data for the removed database
+        let databaseSpecificKey = "cachedTodos_\(database.databaseId)"
+        if let sharedDefaults = UserDefaults(suiteName: "group.com.nirneu.notiontodowidget") {
+            sharedDefaults.removeObject(forKey: databaseSpecificKey)
+        }
+        UserDefaults.standard.removeObject(forKey: databaseSpecificKey)
+        
+        // If we removed the active database, set the first one as active
+        if database.isActive && !notionService.databases.isEmpty {
+            notionService.databases[0] = DatabaseConfiguration(
+                id: notionService.databases[0].id,
+                name: notionService.databases[0].name,
+                databaseId: notionService.databases[0].databaseId,
+                isActive: true,
+                createdAt: notionService.databases[0].createdAt
+            )
+            notionService.activeDatabaseId = notionService.databases[0].id
+        } else if database.isActive {
+            notionService.activeDatabaseId = nil
+        }
+        
+        // Save to persistent storage
+        if let data = try? JSONEncoder().encode(notionService.databases) {
+            UserDefaults.standard.set(data, forKey: "NotionDatabases")
+        }
+        
+        // Delay authentication status update to prevent navigation bounce
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            self.notionService.checkAuthenticationStatus()
+        }
+    }
 }
 
 struct DatabaseManagerRow: View {
     let database: DatabaseConfiguration
     let notionService: NotionService
     let onEdit: () -> Void
+    let onDelete: () -> Void
     
     var body: some View {
         HStack {
@@ -1562,11 +1902,29 @@ struct DatabaseManagerRow: View {
             
             Spacer()
             
-            Button("Edit") {
-                onEdit()
+            HStack(spacing: 8) {
+                Button("Edit") {
+                    onEdit()
+                }
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(.white)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Color.blue)
+                .clipShape(Capsule())
+                
+                Button(action: {
+                    onDelete()
+                }) {
+                    Image(systemName: "trash")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.white)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.red)
+                .clipShape(Capsule())
             }
-            .font(.caption)
-            .buttonStyle(.bordered)
         }
         .padding(.vertical, 12)
         .padding(.horizontal, 16)
@@ -1578,136 +1936,12 @@ struct DatabaseManagerRow: View {
             }
             
             Button("Delete", role: .destructive) {
-                notionService.removeDatabase(database)
+                onDelete()
             }
         }
     }
 }
 
-// MARK: - Individual Task Editor View
-
-struct IndividualTaskEditorView: View {
-    let todo: TodoItem
-    @EnvironmentObject var notionService: NotionService
-    @Environment(\.dismiss) private var dismiss
-    
-    @State private var selectedStatus: TodoStatus = .notStarted
-    @State private var selectedPriority: TodoPriority = .medium
-    @State private var selectedDate: Date?
-    @State private var titleText: String = ""
-    
-    init(todo: TodoItem) {
-        self.todo = todo
-    }
-    
-    var body: some View {
-        NavigationView {
-            Form {
-                Section("Task Details") {
-                    HStack {
-                        Text("Title")
-                        Spacer()
-                        TextField("Task title", text: $titleText)
-                            .multilineTextAlignment(.trailing)
-                    }
-                }
-                
-                Section("Status") {
-                    Picker("Status", selection: $selectedStatus) {
-                        ForEach(TodoStatus.allCases, id: \.self) { status in
-                            Label(status.displayName, systemImage: status.systemImage)
-                                .tag(status)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                }
-                
-                Section("Priority") {
-                    Picker("Priority", selection: $selectedPriority) {
-                        ForEach(TodoPriority.allCases, id: \.self) { priority in
-                            Label(priority.displayName, systemImage: priority.systemImage)
-                                .foregroundColor(priority.color)
-                                .tag(priority)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                }
-                
-                Section("Due Date") {
-                    HStack {
-                        Text("Due Date")
-                        Spacer()
-                        if let selectedDate = selectedDate {
-                            Text(selectedDate.formatted(date: .abbreviated, time: .omitted))
-                                .foregroundColor(.secondary)
-                        } else {
-                            Text("No due date")
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                    
-                    DatePicker("Select Date", selection: Binding(
-                        get: { selectedDate ?? Date() },
-                        set: { selectedDate = $0 }
-                    ), displayedComponents: .date)
-                    .datePickerStyle(.wheel)
-                    
-                    if selectedDate != nil {
-                        Button("Remove Due Date") {
-                            selectedDate = nil
-                        }
-                        .foregroundColor(.red)
-                    }
-                }
-            }
-            .navigationTitle("Edit Task")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button("Cancel") {
-                        dismiss()
-                    }
-                }
-                
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Save") {
-                        saveChanges()
-                        dismiss()
-                    }
-                    .fontWeight(.semibold)
-                }
-            }
-        }
-        .onAppear {
-            selectedStatus = todo.status
-            selectedPriority = todo.priority ?? .medium
-            selectedDate = todo.dueDate
-            titleText = todo.title
-        }
-    }
-    
-    private func saveChanges() {
-        // Update status if changed
-        if selectedStatus != todo.status {
-            notionService.updateTodoStatus(todo, status: selectedStatus)
-        }
-        
-        // Update priority if changed
-        if selectedPriority != todo.priority {
-            notionService.updateTodoPriority(todo, priority: selectedPriority)
-        }
-        
-        // Update due date if changed
-        if selectedDate != todo.dueDate {
-            notionService.updateTodoDueDate(todo, dueDate: selectedDate)
-        }
-        
-        // Update title if changed
-        if titleText != todo.title {
-            notionService.updateTodoTitle(todo, title: titleText)
-        }
-    }
-}
 
 #Preview {
     ContentView()

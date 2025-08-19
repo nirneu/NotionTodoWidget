@@ -84,51 +84,92 @@ class NotionService: ObservableObject {
         }
     }
     
-    private func checkAuthenticationStatus() {
+    func checkAuthenticationStatus() {
         isAuthenticated = apiKey != nil && !databases.isEmpty && activeDatabase != nil
     }
     
     func signOut() {
+        // Store database IDs before clearing for cleanup
+        let databaseIds = databases.map { $0.databaseId }
+        
+        // Clear in-memory data
         apiKey = nil
         databases = []
         savedDatabases = []
         activeDatabaseId = nil
         isAuthenticated = false
         todos = []
+        filteredTodos = []
+        errorMessage = nil
+        statusUpdateMessage = nil
+        databaseProperties = [:]
+        widgetDatabaseId = nil
         
-        // Clear cached todos from App Groups UserDefaults (used by widget)
-        if let sharedDefaults = UserDefaults(suiteName: "group.com.nirneu.notiontodowidget") {
-            sharedDefaults.removeObject(forKey: "cachedTodos")
-            
-            // Also clear all database-specific cached data
-            for database in databases {
-                let databaseSpecificKey = "cachedTodos_\(database.databaseId)"
-                sharedDefaults.removeObject(forKey: databaseSpecificKey)
-            }
-            print("App: Cleared all cached todos from App Groups")
-        }
+        // COMPLETE PRIVACY CLEANUP - Clear ALL UserDefaults keys
         
-        // Clear cached todos from regular UserDefaults
+        // 1. Clear API Key and Core Data
+        UserDefaults.standard.removeObject(forKey: "NotionAPIKey")
+        UserDefaults.standard.removeObject(forKey: "NotionDatabases")
+        
+        // 2. Clear User Preferences (sort, filters)
+        UserDefaults.standard.removeObject(forKey: "sortConfiguration")
+        UserDefaults.standard.removeObject(forKey: "statusFilter")
+        UserDefaults.standard.removeObject(forKey: "priorityFilter")
+        UserDefaults.standard.removeObject(forKey: "widgetDatabaseId")
+        
+        // 3. Clear Database Metadata
+        UserDefaults.standard.removeObject(forKey: "currentDatabaseId")
+        UserDefaults.standard.removeObject(forKey: "currentDatabaseName")
+        UserDefaults.standard.removeObject(forKey: "savedDatabases")
+        
+        // 4. Clear All Cached Todos (general and database-specific)
         UserDefaults.standard.removeObject(forKey: "cachedTodos")
-        for database in databases {
-            let databaseSpecificKey = "cachedTodos_\(database.databaseId)"
+        for databaseId in databaseIds {
+            let databaseSpecificKey = "cachedTodos_\(databaseId)"
             UserDefaults.standard.removeObject(forKey: databaseSpecificKey)
         }
-        print("App: Cleared all cached todos from regular UserDefaults")
         
-        // Clear debug files from Documents directory
+        // 5. Clear ALL App Groups Data (used by widget)
+        if let sharedDefaults = UserDefaults(suiteName: "group.com.nirneu.notiontodowidget") {
+            // Clear user preferences
+            sharedDefaults.removeObject(forKey: "sortConfiguration")
+            sharedDefaults.removeObject(forKey: "statusFilter")
+            sharedDefaults.removeObject(forKey: "priorityFilter")
+            sharedDefaults.removeObject(forKey: "widgetDatabaseId")
+            
+            // Clear database metadata
+            sharedDefaults.removeObject(forKey: "currentDatabaseId")
+            sharedDefaults.removeObject(forKey: "currentDatabaseName")
+            sharedDefaults.removeObject(forKey: "savedDatabases")
+            
+            // Clear all cached todos
+            sharedDefaults.removeObject(forKey: "cachedTodos")
+            for databaseId in databaseIds {
+                let databaseSpecificKey = "cachedTodos_\(databaseId)"
+                sharedDefaults.removeObject(forKey: databaseSpecificKey)
+            }
+            
+            print("🔒 Privacy: Cleared ALL App Groups data")
+        }
+        
+        // 6. Clear debug files from Documents directory
         if let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
             let schemaFile = documentsPath.appendingPathComponent("notion_schema.json")
             let todosFile = documentsPath.appendingPathComponent("notion_todos.json")
             
             try? FileManager.default.removeItem(at: schemaFile)
             try? FileManager.default.removeItem(at: todosFile)
-            print("App: Cleared debug files from Documents directory")
+            print("🔒 Privacy: Cleared debug files from Documents directory")
         }
         
-        // Force widget refresh to clear widget display
+        // 7. Reset user preferences to defaults
+        sortConfiguration = SortConfiguration(primary: .dueDate)
+        statusFilter = Set(TodoStatus.allCases)
+        priorityFilter = Set(TodoPriority.allCases)
+        
+        // 8. Force widget refresh to clear widget display
         WidgetCenter.shared.reloadAllTimelines()
-        print("App: Forced widget timeline refresh after sign out")
+        print("🔒 Privacy: Complete sign out - ALL user data cleared")
     }
     
     // MARK: - Database Management
@@ -191,6 +232,180 @@ class NotionService: ObservableObject {
                 }
             }
         }.resume()
+    }
+    
+    func fetchAvailableDatabases(completion: @escaping (Result<[(id: String, name: String)], Error>) -> Void) {
+        guard let apiKey = apiKey else {
+            completion(.failure(NSError(domain: "NotionService", code: 1, userInfo: [NSLocalizedDescriptionKey: "No API key"])))
+            return
+        }
+        
+        guard let url = URL(string: "https://api.notion.com/v1/search") else {
+            completion(.failure(NSError(domain: "NotionService", code: 2, userInfo: [NSLocalizedDescriptionKey: "Invalid URL"])))
+            return
+        }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("2022-06-28", forHTTPHeaderField: "Notion-Version")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        // Search for databases only
+        let searchBody: [String: Any] = [
+            "query": "",
+            "filter": [
+                "value": "database",
+                "property": "object"
+            ] as [String: Any]
+        ]
+        
+        do {
+            request.httpBody = try JSONSerialization.data(withJSONObject: searchBody)
+        } catch {
+            completion(.failure(error))
+            return
+        }
+        
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error = error {
+                DispatchQueue.main.async {
+                    completion(.failure(error))
+                }
+                return
+            }
+            
+            guard let data = data else {
+                DispatchQueue.main.async {
+                    completion(.failure(NSError(domain: "NotionService", code: 3, userInfo: [NSLocalizedDescriptionKey: "No data received"])))
+                }
+                return
+            }
+            
+            do {
+                if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let results = json["results"] as? [[String: Any]] {
+                    
+                    var allDatabases: [(id: String, name: String)] = []
+                    
+                    // First, collect all database IDs and names
+                    for result in results {
+                        if let id = result["id"] as? String,
+                           let title = result["title"] as? [[String: Any]],
+                           let firstTitle = title.first,
+                           let plainText = firstTitle["plain_text"] as? String {
+                            allDatabases.append((id: id, name: plainText.isEmpty ? "Untitled Database" : plainText))
+                        }
+                    }
+                    
+                    // Now filter databases by checking their properties for task-related fields
+                    self.filterTaskDatabases(databases: allDatabases, completion: completion)
+                    
+                } else {
+                    DispatchQueue.main.async {
+                        completion(.failure(NSError(domain: "NotionService", code: 4, userInfo: [NSLocalizedDescriptionKey: "Invalid response format"])))
+                    }
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    completion(.failure(error))
+                }
+            }
+        }.resume()
+    }
+    
+    private func filterTaskDatabases(databases: [(id: String, name: String)], completion: @escaping (Result<[(id: String, name: String)], Error>) -> Void) {
+        let group = DispatchGroup()
+        var taskDatabases: [(id: String, name: String)] = []
+        let queue = DispatchQueue(label: "database-filter", attributes: .concurrent)
+        
+        for database in databases {
+            group.enter()
+            queue.async {
+                self.checkIfTaskDatabase(databaseId: database.id) { isTaskDB in
+                    if isTaskDB {
+                        taskDatabases.append(database)
+                    }
+                    group.leave()
+                }
+            }
+        }
+        
+        group.notify(queue: DispatchQueue.main) {
+            completion(.success(taskDatabases))
+        }
+    }
+    
+    private func checkIfTaskDatabase(databaseId: String, completion: @escaping (Bool) -> Void) {
+        guard let apiKey = apiKey else {
+            completion(false)
+            return
+        }
+        
+        guard let url = URL(string: "https://api.notion.com/v1/databases/\(databaseId)") else {
+            completion(false)
+            return
+        }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("2022-06-28", forHTTPHeaderField: "Notion-Version")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            guard let data = data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let properties = json["properties"] as? [String: Any] else {
+                completion(false)
+                return
+            }
+            
+            // Check for task-related properties
+            let isTaskDatabase = self.containsTaskProperties(properties: properties)
+            completion(isTaskDatabase)
+        }.resume()
+    }
+    
+    private func containsTaskProperties(properties: [String: Any]) -> Bool {
+        // Define task-related property names and types
+        let taskPropertyNames = [
+            "status", "state", "done", "complete", "progress", "task", "todo", "priority", 
+            "due", "deadline", "date", "finish", "start", "end", "assignee", "assigned"
+        ]
+        
+        let taskPropertyTypes = ["status", "select", "date", "people", "checkbox"]
+        
+        var foundTaskProperties = 0
+        
+        for (propertyName, propertyData) in properties {
+            guard let propertyInfo = propertyData as? [String: Any],
+                  let propertyType = propertyInfo["type"] as? String else {
+                continue
+            }
+            
+            let lowercaseName = propertyName.lowercased()
+            
+            // Check if property name suggests it's task-related
+            let hasTaskName = taskPropertyNames.contains { taskName in
+                lowercaseName.contains(taskName)
+            }
+            
+            // Check if property type is commonly used in task databases
+            let hasTaskType = taskPropertyTypes.contains(propertyType)
+            
+            if hasTaskName && hasTaskType {
+                foundTaskProperties += 1
+            }
+            
+            // Special case: Status property with task-like options
+            if propertyType == "status" || (propertyType == "select" && lowercaseName.contains("status")) {
+                foundTaskProperties += 2 // Status is a strong indicator
+            }
+        }
+        
+        // Consider it a task database if it has at least 2 task-related properties
+        return foundTaskProperties >= 2
     }
     
     func addDatabase(name: String, databaseId: String) {
