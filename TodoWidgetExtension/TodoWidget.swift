@@ -391,22 +391,22 @@ struct SmallWidgetView: View {
     let entry: TodoEntry
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            // Compact database indicator
+        VStack(alignment: .leading, spacing: 0) {
+            // Ultra-compact database indicator
             if let currentDatabaseName = entry.currentDatabaseName {
                 HStack {
                     Image(systemName: "cylinder.fill")
-                        .font(.system(size: 6))
+                        .font(.system(size: 5))
                         .foregroundColor(.secondary)
                     Text(currentDatabaseName)
-                        .font(.system(size: 7, weight: .medium))
+                        .font(.system(size: 6, weight: .medium))
                         .foregroundColor(.secondary)
                         .lineLimit(1)
                 }
-                .padding(.bottom, 2)
+                .padding(.bottom, 4)
             }
             
-            // Content
+            // Content stretched to fill available space
             if entry.todos.isEmpty {
                 VStack(spacing: 4) {
                     Image(systemName: "checkmark.circle.fill")
@@ -418,7 +418,7 @@ struct SmallWidgetView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                VStack(spacing: 1) {
+                VStack(spacing: 8) {
                     ForEach(entry.todos.prefix(3)) { todo in
                         Button(intent: EditTodoIntent(todoId: todo.id, databaseId: entry.configuration.database?.databaseId)) {
                             SmallTodoRowView(todo: todo)
@@ -426,18 +426,17 @@ struct SmallWidgetView: View {
                         .buttonStyle(PlainButtonStyle())
                     }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                 
                 if entry.todos.count > 3 {
                     Text("+ \(entry.todos.count - 3) more")
-                        .font(.system(size: 8, weight: .medium))
+                        .font(.system(size: 7, weight: .medium))
                         .foregroundColor(.secondary)
-                        .padding(.top, 1)
                 }
             }
         }
-        .padding(.horizontal, 4)
-        .padding(.vertical, 4)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(8)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         .widgetURL(buildWidgetURL(for: entry))
     }
 }
@@ -450,12 +449,12 @@ struct SmallTodoRowView: View {
             // Status indicator
             Image(systemName: todo.status == .completed ? "checkmark.circle.fill" : "circle")
                 .foregroundColor(todo.status == .completed ? .green : .secondary)
-                .font(.system(size: 10))
+                .font(.system(size: 12))
             
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: 2) {
                 // Title only - larger and clearer
                 Text(todo.title)
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.system(size: 12, weight: .medium))
                     .lineLimit(1)
                     .strikethrough(todo.status == .completed)
                     .foregroundColor(todo.status == .completed ? .secondary : .primary)
@@ -495,7 +494,7 @@ struct SmallTodoRowView: View {
                 }
             }
         }
-        .padding(.vertical, 0)
+        .padding(.vertical, 2)
     }
     
     private func isUrgentDate(_ date: Date) -> Bool {
@@ -563,8 +562,8 @@ struct MediumWidgetView: View {
     let entry: TodoEntry
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            // Database indicator at the top
+        VStack(alignment: .leading, spacing: 4) {
+            // Database indicator at the top with reduced padding
             if let currentDatabaseName = entry.currentDatabaseName {
                 HStack {
                     Image(systemName: "cylinder.fill")
@@ -576,11 +575,9 @@ struct MediumWidgetView: View {
                         .lineLimit(1)
                     Spacer()
                 }
-                .padding(.horizontal, 2)
-                .padding(.bottom, 2)
             }
             
-            // Content
+            // Content with proper spacing
             if entry.todos.isEmpty {
                 VStack(spacing: 8) {
                     Image(systemName: "checkmark.circle.fill")
@@ -592,7 +589,7 @@ struct MediumWidgetView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                VStack(spacing: 4) {
+                VStack(spacing: 2) {
                     ForEach(entry.todos.prefix(3)) { todo in
                         Button(intent: EditTodoIntent(todoId: todo.id, databaseId: entry.configuration.database?.databaseId)) {
                             TodoRowView(todo: todo)
@@ -605,21 +602,24 @@ struct MediumWidgetView: View {
                         }
                     }
                 }
+                .frame(maxWidth: .infinity)
                 
+                // More tasks indicator with proper spacing
                 if entry.todos.count > 3 {
                     HStack {
                         Spacer()
                         Text("+ \(entry.todos.count - 3) more tasks")
-                            .font(.system(size: 10, weight: .medium))
+                            .font(.system(size: 9, weight: .medium))
                             .foregroundColor(.secondary)
-                            .padding(.top, 4)
                         Spacer()
                     }
+                    .padding(.top, 2)
                 }
             }
         }
-        .padding(.horizontal, 8)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .widgetURL(buildWidgetURL(for: entry))
     }
 }
@@ -630,23 +630,22 @@ struct LargeWidgetView: View {
     let entry: TodoEntry
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 4) {
             // Database indicator at the top
             if let currentDatabaseName = entry.currentDatabaseName {
                 HStack {
                     Image(systemName: "cylinder.fill")
-                        .font(.system(size: 10))
+                        .font(.system(size: 8))
                         .foregroundColor(.secondary)
                     Text(currentDatabaseName)
-                        .font(.system(size: 10, weight: .medium))
+                        .font(.system(size: 8, weight: .medium))
                         .foregroundColor(.secondary)
                         .lineLimit(1)
                     Spacer()
                 }
-                .padding(.bottom, 4)
             }
             
-            // Content using full height
+            // Content using available space efficiently
             if entry.todos.isEmpty {
                 VStack(spacing: 12) {
                     Image(systemName: "checkmark.circle.fill")
@@ -658,7 +657,7 @@ struct LargeWidgetView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                VStack(spacing: 3) {
+                VStack(spacing: 2) {
                     ForEach(entry.todos.prefix(6)) { todo in
                         Button(intent: EditTodoIntent(todoId: todo.id, databaseId: entry.configuration.database?.databaseId)) {
                             LargeTodoRowView(todo: todo)
@@ -667,7 +666,7 @@ struct LargeWidgetView: View {
                         
                         if todo.id != entry.todos.prefix(6).last?.id {
                             Divider()
-                                .padding(.horizontal, 4)
+                                .padding(.horizontal, 2)
                         }
                     }
                     
@@ -675,19 +674,18 @@ struct LargeWidgetView: View {
                         HStack {
                             Spacer()
                             Text("+ \(entry.todos.count - 6) more tasks")
-                                .font(.system(size: 11, weight: .medium))
+                                .font(.system(size: 9, weight: .medium))
                                 .foregroundColor(.secondary)
-                                .padding(.top, 2)
                             Spacer()
                         }
+                        .padding(.top, 2)
                     }
-                    
-                    Spacer(minLength: 0)
                 }
             }
         }
-        .padding(8)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .widgetURL(buildWidgetURL(for: entry))
     }
 }
@@ -833,12 +831,12 @@ struct TodoRowView: View {
             // Status indicator
             Image(systemName: todo.status == .completed ? "checkmark.circle.fill" : "circle")
                 .foregroundColor(todo.status == .completed ? .green : .secondary)
-                .font(.system(size: 14))
+                .font(.system(size: 13))
             
             VStack(alignment: .leading, spacing: 1) {
                 // Title - even larger text
                 Text(todo.title)
-                    .font(.system(size: 15, weight: .medium))
+                    .font(.system(size: 14, weight: .medium))
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
                     .strikethrough(todo.status == .completed)
@@ -896,7 +894,7 @@ struct TodoRowView: View {
                 }
             }
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 1)
     }
     
     private func statusColor(for status: TodoStatus) -> Color {
